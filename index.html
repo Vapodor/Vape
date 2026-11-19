@@ -31,7 +31,7 @@
     <script>
         // Diagnostic : affiche un message si le site ne démarre pas
         (function () {
-            var pending = null;
+            var pending = null, locked = false;
             function apply() {
                 var b = document.getElementById('boot');
                 if (b && pending) b.innerHTML = pending;
@@ -41,8 +41,9 @@
             window.addEventListener('error', function (e) {
                 var t = e.target;
                 if (t && t !== window && (t.tagName === 'SCRIPT' || t.tagName === 'LINK')) {
+                    locked = true;
                     show('<p style="font-weight:700">Impossible de charger un composant du site.</p><p style="opacity:.7;font-size:12px;word-break:break-all">' + (t.src || t.href) + '</p><p style="opacity:.7;font-size:12px">Vérifiez votre connexion internet puis rechargez.</p><button onclick="location.reload()" style="margin-top:12px;padding:8px 16px;border-radius:12px;border:1px solid currentColor;background:none;color:inherit;font-weight:700">Recharger</button>');
-                } else {
+                } else if (!locked) {
                     show('<p style="font-weight:700">Une erreur empêche le site de s\'afficher.</p><pre style="white-space:pre-wrap;opacity:.7;font-size:12px;text-align:left">' + String(e.message || e.error || 'Erreur inconnue').replace(/</g, '&lt;') + '</pre><button onclick="location.reload()" style="margin-top:12px;padding:8px 16px;border-radius:12px;border:1px solid currentColor;background:none;color:inherit;font-weight:700">Recharger</button>');
                 }
             }, true);
@@ -74,12 +75,12 @@
         }
     </script>
     <!-- React & ReactDOM -->
-    <script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js" crossorigin></script>
-    <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
     <!-- Babel pour JSX -->
-    <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
     <!-- Client Base de données -->
-    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4" crossorigin="anonymous"></script>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen selection:bg-teal-500 selection:text-black font-sans">
     <div id="root"><div id="boot" style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:24px;text-align:center;font-family:system-ui,sans-serif"><p style="font-weight:800;letter-spacing:.08em">VAPO D'OR</p><p id="boot-hint" style="opacity:.6;font-size:13px">Chargement...</p></div></div>
@@ -1536,4 +1537,1951 @@
                     is_promo: !!newProduct.is_promo,
                     specs: (newProduct.specs || [])
                         .map(sp => ({ label: String(sp.label || '').trim(), value: String(sp.value || '').trim() }))
-                        .filter(sp => sp.label &&
+                        .filter(sp => sp.label && sp.value),
+                    main_image_url: newProduct.main_image_url
+                };
+
+                let { error: pError } = await supabaseClient.from('products').upsert([productPayload]);
+                if (pError && /is_featured|is_promo/.test(pError.message)) {
+                    alert("Une colonne manque dans Supabase ('is_featured' ou 'is_promo') : le produit est enregistré SANS le statut « Meilleure vente » / « Promotion ». Exécutez le SQL fourni pour l'activer.");
+                    const { is_featured, is_promo, ...rest } = productPayload;
+                    ({ error: pError } = await supabaseClient.from('products').upsert([rest]));
+                }
+                if (pError) return alert('Erreur produit : ' + pError.message + (/specs|product_type/.test(pError.message) ? "\n\nIl manque les colonnes 'product_type' et 'specs' dans Supabase (voir le SQL fourni)." : ''));
+
+                const stamp = Date.now().toString(36);
+                const formattedVariants = variantsList.map((v, i) => ({
+                    id: v.id.startsWith(`var_${productId}_`) || v.id.startsWith(`var_gen_`) ? v.id : `var_${productId}_${stamp}${i}`,
+                    product_id: productId,
+                    price: parseFloat(v.price),
+                    stock: v.is_out_of_stock ? 0 : 100,
+                    nicotine_level: v.nicotine_level || '-',
+                    volume_ml: v.volume_ml || '-',
+                    ohm_value: v.ohm_value || '-',
+                    color_finish: v.color_finish || '-',
+                    flavor: v.flavor || '-',
+                    image_url: v.image_url || ''
+                }));
+
+                const { error: vError } = await supabaseClient.from('variants').upsert(formattedVariants);
+                if (vError) return alert('Erreur déclinaisons : ' + vError.message);
+
+                if (editingProductId) {
+                    const keepIds = new Set(formattedVariants.map(v => v.id));
+                    const oldProduct = products.find(p => p.id === editingProductId);
+                    const toDelete = (oldProduct?.variants || []).map(v => v.id).filter(id => !keepIds.has(id));
+                    if (toDelete.length > 0) {
+                        const { error: dError } = await supabaseClient.from('variants').delete().in('id', toDelete);
+                        if (dError) alert('Produit enregistré, mais des anciennes déclinaisons n\'ont pas pu être supprimées : ' + dError.message);
+                    }
+                }
+
+                alert(editingProductId ? 'Produit mis à jour !' : 'Produit enregistré !');
+                resetProductForm();
+                loadDataFromSupabase();
+            };
+
+            const toggleFeatured = async (p, field = 'is_featured') => {
+                const { error } = await supabaseClient.from('products').update({ [field]: !p[field] }).eq('id', p.id);
+                if (error) return alert('Erreur : ' + error.message + (new RegExp(field).test(error.message) ? "\n\nLa colonne '" + field + "' n'existe pas encore dans Supabase : exécutez le SQL fourni." : ''));
+                setProducts(prev => prev.map(x => x.id === p.id ? { ...x, [field]: !p[field] } : x));
+            };
+
+            const startEditProduct = (prod) => {
+                setEditingProductId(prod.id);
+                setNewProduct({
+                    name: prod.name,
+                    flavor: prod.flavor || '',
+                    brand_id: prod.brand_id || '',
+                    category_id: prod.category_id || '',
+                    short_description: prod.short_description || '',
+                    box_content: prod.box_content || '',
+                    product_type: prod.product_type || '',
+                    is_featured: !!prod.is_featured,
+                    is_promo: !!prod.is_promo,
+                    specs: Array.isArray(prod.specs) ? prod.specs.map(sp => ({ label: sp.label || '', value: sp.value || '' })) : [],
+                    main_image_url: prod.main_image_url
+                });
+                setVariantsList(prod.variants.length > 0 ? prod.variants.map(v => ({
+                    id: v.id,
+                    price: String(v.price),
+                    is_out_of_stock: (v.stock ?? 1) === 0,
+                    nicotine_level: v.nicotine_level || '-',
+                    volume_ml: v.volume_ml || '-',
+                    ohm_value: v.ohm_value || '-',
+                    color_finish: v.color_finish || '-',
+                    flavor: v.flavor || '-',
+                    image_url: v.image_url || ''
+                })) : [EMPTY_VARIANT()]);
+                window.scrollTo(0, 0);
+            };
+
+            const deleteProduct = async (id) => {
+                if (!confirm('Supprimer ce produit et toutes ses déclinaisons ?')) return;
+                const { error: vErr } = await supabaseClient.from('variants').delete().eq('product_id', id);
+                if (vErr) return alert('Erreur suppression des déclinaisons : ' + vErr.message);
+                const { error } = await supabaseClient.from('products').delete().eq('id', id);
+                if (error) return alert('Erreur suppression du produit : ' + error.message);
+                if (editingProductId === id) resetProductForm();
+                setCart(prev => prev.filter(i => i.productId !== id));
+                loadDataFromSupabase();
+            };
+
+            const [newBrandName, setNewBrandName] = useState('');
+            const [newBrandDesc, setNewBrandDesc] = useState('');
+            const [newBrandLogo, setNewBrandLogo] = useState(DEFAULT_LOGO);
+
+            const handleBrandLogoUpload = async (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const url = await uploadImageToSupabase(file);
+                    if (url) setNewBrandLogo(url);
+                }
+            };
+
+            const handleAddBrand = async (e) => {
+                e.preventDefault();
+                if (!newBrandName) return;
+                const brandObj = {
+                    id: 'b_' + Date.now(),
+                    name: newBrandName,
+                    slug: newBrandName.toLowerCase().replace(/\s+/g, '-'),
+                    description: newBrandDesc,
+                    logo_url: newBrandLogo
+                };
+                const { error } = await supabaseClient.from('brands').insert([brandObj]);
+                if (error) return alert('Erreur : ' + error.message);
+
+                setNewBrandName('');
+                setNewBrandDesc('');
+                setNewBrandLogo(DEFAULT_LOGO);
+                alert('Marque ajoutée !');
+                loadDataFromSupabase();
+            };
+
+            const deleteBrand = async (id) => {
+                const count = products.filter(p => p.brand_id === id).length;
+                if (!confirm(count > 0
+                    ? `Supprimer cette marque ? ${count} produit(s) seront conservés mais sans marque.`
+                    : 'Supprimer cette marque ?')) return;
+                const { error: uErr } = await supabaseClient.from('products').update({ brand_id: null }).eq('brand_id', id);
+                if (uErr) return alert('Erreur : ' + uErr.message);
+                const { error } = await supabaseClient.from('brands').delete().eq('id', id);
+                if (error) return alert('Erreur suppression de la marque : ' + error.message);
+                loadDataFromSupabase();
+            };
+
+            const [editingCatId, setEditingCatId] = useState(null);
+            const [newCatName, setNewCatName] = useState('');
+            const [newCatParent, setNewCatParent] = useState('');
+            const [newCatImage, setNewCatImage] = useState(DEFAULT_CAT_IMG);
+            const [newCatOrder, setNewCatOrder] = useState('0');
+            const [newCatPriceTable, setNewCatPriceTable] = useState([{ label: '', price: '' }]);
+
+            const getAllChildCategoryIds = (catId, seen = new Set()) => {
+                if (seen.has(catId)) return [];
+                seen.add(catId);
+                let ids = [catId];
+                categories.filter(c => c.parent_id === catId).forEach(child => {
+                    ids = ids.concat(getAllChildCategoryIds(child.id, seen));
+                });
+                return ids;
+            };
+
+            const resetCategoryForm = () => {
+                setEditingCatId(null);
+                setNewCatName('');
+                setNewCatParent('');
+                setNewCatImage(DEFAULT_CAT_IMG);
+                setNewCatOrder('0');
+                setNewCatPriceTable([{ label: '', price: '' }]);
+            };
+
+            const handleLocalCatImageUpload = async (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const url = await uploadImageToSupabase(file);
+                    if (url) setNewCatImage(url);
+                }
+            };
+
+            const handleSaveCategory = async (e) => {
+                e.preventDefault();
+                if (!newCatName) return;
+
+                if (editingCatId && newCatParent && getAllChildCategoryIds(editingCatId).includes(newCatParent)) {
+                    return alert('Un dossier ne peut pas être rangé dans lui-même ou dans un de ses sous-dossiers.');
+                }
+
+                const filteredPriceTable = newCatPriceTable.filter(row => row.label.trim() !== '' || String(row.price).trim() !== '');
+
+                const catObj = {
+                    id: editingCatId || ('c_' + Date.now()),
+                    parent_id: newCatParent === '' ? null : newCatParent,
+                    name: newCatName,
+                    slug: newCatName.toLowerCase().replace(/\s+/g, '-'),
+                    image: newCatImage,
+                    display_order: parseInt(newCatOrder) || 0,
+                    price_table: filteredPriceTable
+                };
+
+                const { error } = await supabaseClient.from('categories').upsert([catObj]);
+                if (error) return alert('Erreur : ' + error.message);
+
+                resetCategoryForm();
+                alert('Rubrique enregistrée !');
+                loadDataFromSupabase();
+            };
+
+            const startAddSubCategory = (parentCat) => {
+                resetCategoryForm();
+                setNewCatParent(parentCat.id);
+            };
+
+            const startEditCategory = (cat) => {
+                setEditingCatId(cat.id);
+                setNewCatName(cat.name);
+                setNewCatParent(cat.parent_id || '');
+                setNewCatImage(cat.image || DEFAULT_CAT_IMG);
+                setNewCatOrder(String(cat.display_order ?? 0));
+                setNewCatPriceTable(cat.price_table && cat.price_table.length > 0 ? cat.price_table : [{ label: '', price: '' }]);
+            };
+
+            const moveCategoryOrder = async (cat, direction) => {
+                const siblings = sortCategories(categories.filter(c => (c.parent_id || null) === (cat.parent_id || null)));
+                const idx = siblings.findIndex(c => c.id === cat.id);
+                const target = idx + direction;
+                if (idx < 0 || target < 0 || target >= siblings.length) return;
+
+                const reordered = siblings.slice();
+                [reordered[idx], reordered[target]] = [reordered[target], reordered[idx]];
+
+                // Affichage immédiat, puis enregistrement
+                const newOrderById = {};
+                reordered.forEach((c, i) => { newOrderById[c.id] = i; });
+                setCategories(prev => sortCategories(prev.map(c => c.id in newOrderById ? { ...c, display_order: newOrderById[c.id] } : c)));
+
+                const jobs = reordered
+                    .filter((c, i) => (c.display_order ?? 0) !== i || c.id === cat.id)
+                    .map(c => supabaseClient.from('categories').update({ display_order: newOrderById[c.id] }).eq('id', c.id));
+                const results = await Promise.all(jobs);
+                const failed = results.find(r => r.error);
+                if (failed) alert("Erreur lors de la modification de l'ordre : " + failed.error.message + "\n(La colonne display_order existe-t-elle dans Supabase ?)");
+                loadDataFromSupabase();
+            };
+
+            const deleteCategory = async (id) => {
+                const cat = categories.find(c => c.id === id);
+                const newParent = cat?.parent_id || null;
+                const childCount = categories.filter(c => c.parent_id === id).length;
+                const prodCount = products.filter(p => p.category_id === id).length;
+                if (!confirm(`Supprimer cette rubrique ?\n- ${childCount} sous-dossier(s) et ${prodCount} produit(s) seront remontés ${newParent ? 'dans le dossier parent' : 'à la racine / non classés'}.`)) return;
+
+                const { error: e1 } = await supabaseClient.from('categories').update({ parent_id: newParent }).eq('parent_id', id);
+                if (e1) return alert('Erreur : ' + e1.message);
+                const { error: e2 } = await supabaseClient.from('products').update({ category_id: newParent }).eq('category_id', id);
+                if (e2) return alert('Erreur : ' + e2.message);
+                const { error } = await supabaseClient.from('categories').delete().eq('id', id);
+                if (error) return alert('Erreur suppression de la rubrique : ' + error.message);
+
+                if (editingCatId === id) resetCategoryForm();
+                loadDataFromSupabase();
+            };
+
+            const [bulkBrandId, setBulkBrandId] = useState('');
+            const [bulkCategoryId, setBulkCategoryId] = useState('');
+            const [bulkValue, setBulkValue] = useState('');
+            const [bulkBusy, setBulkBusy] = useState(false);
+
+            // Configurateur de tableau de prix d'un dossier (affiché en haut de la page du dossier)
+            const [ptCatId, setPtCatId] = useState('');
+            const [ptRows, setPtRows] = useState([{ label: '', price: '' }]);
+            const [ptBusy, setPtBusy] = useState(false);
+
+            const selectPriceTableCategory = (catId) => {
+                setPtCatId(catId);
+                const cat = categories.find(c => c.id === catId);
+                const rows = cat && Array.isArray(cat.price_table) && cat.price_table.length > 0
+                    ? cat.price_table.map(r => ({ label: r.label || '', price: r.price ?? '' }))
+                    : [{ label: '', price: '' }];
+                setPtRows(rows);
+            };
+
+            const savePriceTable = async (rows, successMessage) => {
+                if (!ptCatId) return alert('Veuillez choisir un dossier.');
+                setPtBusy(true);
+                try {
+                    const { error } = await supabaseClient.from('categories').update({ price_table: rows }).eq('id', ptCatId);
+                    if (error) return alert('Erreur : ' + error.message);
+                    alert(successMessage);
+                    await loadDataFromSupabase();
+                    if (rows.length === 0) setPtRows([{ label: '', price: '' }]);
+                } finally {
+                    setPtBusy(false);
+                }
+            };
+
+            const handleSavePriceTable = () => {
+                const rows = ptRows
+                    .map(r => ({ label: r.label.trim(), price: String(r.price).trim() }))
+                    .filter(r => r.label !== '' || r.price !== '');
+                if (rows.length === 0) return alert('Ajoutez au moins une ligne, ou utilisez « Retirer le tableau ».');
+                if (rows.some(r => r.label === '')) return alert('Chaque ligne doit avoir une désignation.');
+                savePriceTable(rows, 'Tableau de prix enregistré ! Il s\'affiche en haut de la page du dossier.');
+            };
+
+            const handleDeletePriceTable = () => {
+                if (!confirm('Retirer le tableau de prix de ce dossier ?')) return;
+                savePriceTable([], 'Tableau de prix retiré.');
+            };
+
+            // Application du modèle de prix DIY à tous les produits d'un dossier
+            const [diyBulkCatId, setDiyBulkCatId] = useState('');
+            const [diyBulkVols, setDiyBulkVols] = useState(() => Object.fromEntries(DIY_VOLUMES.map(v => [v, true])));
+            const [diyBulkNics, setDiyBulkNics] = useState(() => Object.fromEntries(DIY_NICOTINES.map(n => [n, true])));
+            const [diyBulkBusy, setDiyBulkBusy] = useState(false);
+
+            const handleApplyDiyToCategory = async () => {
+                if (!diyBulkCatId) return alert('Choisissez le dossier cible (ex : E-liquide DIY).');
+                const vols = DIY_VOLUMES.filter(v => diyBulkVols[v]);
+                const nics = DIY_NICOTINES.filter(n => diyBulkNics[n]);
+
+                const combos = [];
+                vols.forEach(vol => nics.forEach(nic => {
+                    const price = parseFloat(diyPresetPrices[`${vol}_${nic}`]);
+                    if (!isNaN(price) && price >= 0) combos.push({ vol, nic, price });
+                }));
+                if (combos.length === 0) return alert("Aucun prix défini pour ces choix. Renseignez d'abord le modèle de prix (onglet 4).");
+
+                const catIds = getAllChildCategoryIds(diyBulkCatId);
+                const targets = products.filter(p => catIds.includes(p.category_id));
+                if (targets.length === 0) return alert('Aucun produit dans ce dossier.');
+
+                const updates = new Map(); // prix -> identifiants de déclinaisons à mettre à jour
+                const creations = [];
+                let updateCount = 0;
+                targets.forEach(p => combos.forEach(({ vol, nic, price }) => {
+                    const matches = p.variants.filter(v => v.volume_ml === vol && v.nicotine_level === nic);
+                    if (matches.length > 0) {
+                        matches.forEach(v => {
+                            if ((Number(v.price) || 0) === price) return;
+                            if (!updates.has(price)) updates.set(price, []);
+                            updates.get(price).push(v.id);
+                            updateCount++;
+                        });
+                    } else {
+                        creations.push({
+                            id: `var_${p.id}_diy_${vol}_${nic}`,
+                            product_id: p.id,
+                            price,
+                            stock: 100,
+                            nicotine_level: nic,
+                            volume_ml: vol,
+                            ohm_value: '-',
+                            color_finish: '-',
+                            flavor: '-',
+                            image_url: ''
+                        });
+                    }
+                }));
+
+                if (updateCount === 0 && creations.length === 0) return alert('Tous les produits de ce dossier ont déjà ces prix.');
+                if (!confirm(`${targets.length} produit(s) dans ce dossier :\n- ${updateCount} prix mis à jour\n- ${creations.length} déclinaison(s) créée(s)\nLes autres déclinaisons ne sont pas modifiées.\nConfirmer ?`)) return;
+
+                setDiyBulkBusy(true);
+                try {
+                    const jobs = [];
+                    updates.forEach((ids, price) => {
+                        for (let i = 0; i < ids.length; i += 100) {
+                            jobs.push(supabaseClient.from('variants').update({ price }).in('id', ids.slice(i, i + 100)));
+                        }
+                    });
+                    for (let i = 0; i < creations.length; i += 200) {
+                        jobs.push(supabaseClient.from('variants').upsert(creations.slice(i, i + 200)));
+                    }
+                    const results = await Promise.all(jobs);
+                    const failed = results.filter(r => r.error);
+                    if (failed.length > 0) {
+                        alert(`Terminé avec ${failed.length} erreur(s) : ${failed[0].error.message}`);
+                    } else {
+                        alert(`Modèle DIY appliqué : ${updateCount} prix mis à jour, ${creations.length} déclinaison(s) créée(s).`);
+                    }
+                } catch (err) {
+                    alert('Erreur : ' + err.message);
+                } finally {
+                    setDiyBulkBusy(false);
+                    loadDataFromSupabase();
+                }
+            };
+
+
+            const handleBulkPriceUpdate = async (e) => {
+                e.preventDefault();
+                const newPrice = parseFloat(bulkValue);
+                if (isNaN(newPrice) || newPrice < 0) return alert('Veuillez saisir un prix valide.');
+                if (!bulkBrandId && !bulkCategoryId) {
+                    return alert('Veuillez sélectionner au moins une marque ou un dossier cible.');
+                }
+
+                let targetProducts = products;
+                if (bulkBrandId) targetProducts = targetProducts.filter(p => p.brand_id === bulkBrandId);
+                if (bulkCategoryId) {
+                    const validCatIds = getAllChildCategoryIds(bulkCategoryId);
+                    targetProducts = targetProducts.filter(p => validCatIds.includes(p.category_id));
+                }
+                if (targetProducts.length === 0) return alert('Aucun produit ne correspond à ces critères.');
+
+                const changes = new Map();
+                let count = 0;
+                targetProducts.forEach(prod => prod.variants.forEach(v => {
+                    if ((Number(v.price) || 0) === newPrice) return;
+                    if (!changes.has(newPrice)) changes.set(newPrice, []);
+                    changes.get(newPrice).push(v.id);
+                    count++;
+                }));
+
+                if (count === 0) return alert('Tous les produits ciblés ont déjà ce prix.');
+                if (!confirm(`Le prix de ${count} déclinaison(s) (${targetProducts.length} produit(s)) sera fixé à ${fmt(newPrice)} Ar.\nConfirmer ?`)) return;
+
+                setBulkBusy(true);
+                try {
+                    const jobs = [];
+                    changes.forEach((ids, price) => {
+                        for (let i = 0; i < ids.length; i += 100) {
+                            jobs.push(supabaseClient.from('variants').update({ price }).in('id', ids.slice(i, i + 100)));
+                        }
+                    });
+                    const results = await Promise.all(jobs);
+                    const failed = results.filter(r => r.error);
+                    if (failed.length > 0) {
+                        alert(`Terminé avec ${failed.length} erreur(s).`);
+                    } else {
+                        alert(`Changement collectif effectué : ${count} déclinaison(s) mise(s) à jour.`);
+                        setBulkValue('');
+                    }
+                } catch (err) {
+                    alert('Erreur : ' + err.message);
+                } finally {
+                    setBulkBusy(false);
+                    loadDataFromSupabase();
+                }
+            };
+
+            const activeCategory = categories.find(c => c.id === selectedCategoryId);
+            const activeBrand = brands.find(b => b.id === selectedBrandId);
+            const selectedProduct = products.find(p => p.id === selectedProductId);
+
+            const queryWords = norm(searchQuery).trim().split(/\s+/).filter(Boolean);
+            const searchResults = queryWords.length === 0 ? [] : products.filter(p => {
+                if (!isVisible(p)) return false;
+                const brand = brands.find(b => b.id === p.brand_id);
+                const category = categories.find(c => c.id === p.category_id);
+                const searchableText = norm([
+                    p.name,
+                    p.flavor,
+                    p.short_description,
+                    p.box_content,
+                    p.is_promo ? 'promo promotion' : '',
+                    PRODUCT_TYPES[p.product_type]?.label || '',
+                    getSpecs(p).map(sp => `${sp.label} ${sp.value}`).join(' '),
+                    brand ? brand.name : '',
+                    category ? category.name : '',
+                    ...p.variants.map(v => `${v.flavor} ${v.nicotine_level} ${v.volume_ml} ${v.color_finish} ${v.ohm_value}`)
+                ].join(' '));
+                return queryWords.every(word => searchableText.includes(word) || (word.startsWith('promo') && !!p.is_promo));
+            });
+
+            const preferredVariantId = (p) => {
+                if (!filters.nic && !filters.vol) return undefined;
+                const matches = p.variants.filter(v => variantMatches(v, filters));
+                return (matches.find(isInStock) || matches[0])?.id;
+            };
+
+            const renderCard = (product) => (
+                <ProductCard
+                    key={product.id}
+                    product={product}
+                    brand={brands.find(b => b.id === product.brand_id)}
+                    hideOutOfStock={hideOutOfStock}
+                    selectedVarId={selectedVariantByProduct[product.id] || preferredVariantId(product)}
+                    onSelectVariant={onSelectVariant}
+                    qty={quantityByProduct[product.id] || 1}
+                    onQty={onQty}
+                    onOpen={openProduct}
+                    onAdd={addToCart}
+                />
+            );
+
+            const gridClass = "grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6";
+            const uncategorizedProducts = products.filter(p => !p.category_id || !categories.some(c => c.id === p.category_id));
+
+            const renderAdminProductRow = (p) => (
+                <div key={p.id} className="bg-slate-900 border border-slate-800 p-3 rounded-xl flex items-center justify-between">
+                    <div className="flex items-center space-x-3">
+                        <div className="w-10 h-10 bg-white rounded-lg border border-slate-800 flex items-center justify-center p-1">
+                            <img src={p.main_image_url} alt={p.name} loading="lazy" className="max-w-full max-h-full object-contain" />
+                        </div>
+                        <div>
+                            <h4 className="font-bold text-xs text-slate-200">{p.is_featured && <span className="text-teal-400 mr-1">★</span>}{p.is_promo && <span className="text-rose-400 mr-1">%</span>}{p.name}</h4>
+                            <p className="text-[10px] text-slate-400">{p.variants.length} option(s) tarifaire(s)</p>
+                        </div>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                        <button onClick={() => toggleFeatured(p, 'is_promo')} title="Promotion" className={`px-2.5 py-1 border rounded-lg text-xs font-bold ${p.is_promo ? 'bg-rose-500 text-white border-rose-500' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>%</button>
+                        <button onClick={() => toggleFeatured(p)} title="Meilleure vente" className={`px-2.5 py-1 border rounded-lg text-xs font-bold ${p.is_featured ? 'bg-teal-500 text-black border-teal-500' : 'bg-slate-950 text-slate-400 border-slate-800'}`}>★</button>
+                        <button onClick={() => startEditProduct(p)} className="px-2.5 py-1 bg-amber-500/10 text-amber-400 border border-amber-500/30 rounded-lg text-xs font-bold">Modifier</button>
+                        <button onClick={() => deleteProduct(p.id)} className="px-2.5 py-1 bg-rose-500/10 text-rose-400 border border-rose-500/30 rounded-lg text-xs font-bold">Supprimer</button>
+                    </div>
+                </div>
+            );
+
+            const excludedParentIds = editingCatId ? getAllChildCategoryIds(editingCatId) : [];
+
+            return (
+                <div className="flex flex-col min-h-screen bg-slate-950 text-slate-100">
+                    {!isAgeVerified && (
+                        <div className="fixed inset-0 bg-slate-950/95 backdrop-blur-xl z-50 flex items-center justify-center p-4">
+                            <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-md w-full shadow-2xl text-center space-y-6">
+                                <div className="w-16 h-16 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center mx-auto text-rose-500 font-black text-2xl">
+                                    18+
+                                </div>
+                                <div className="space-y-2">
+                                    <h2 className="text-xl font-black text-slate-100">Avertissement Légal</h2>
+                                    <p className="text-xs text-slate-400 leading-relaxed">
+                                        Les produits contenus sur <strong className="text-teal-400">Vapo d'Or</strong> sont strictement réservés aux personnes majeures.
+                                    </p>
+                                    <p className="text-xs text-slate-300 font-semibold pt-2">
+                                        Certifiez-vous avoir 18 ans ou plus ?
+                                    </p>
+                                </div>
+                                <div className="space-y-2.5">
+                                    <button
+                                        onClick={confirmAge}
+                                        className="w-full py-3.5 bg-teal-500 hover:bg-teal-400 text-black font-black text-xs uppercase tracking-wider rounded-2xl shadow-lg shadow-teal-500/25 transition">
+                                        J'ai 18 ans ou plus (Entrer)
+                                    </button>
+                                    <button
+                                        onClick={() => window.location.href = "https://www.google.com"}
+                                        className="w-full py-3 bg-slate-950 hover:bg-slate-800 text-slate-400 font-bold text-xs rounded-2xl transition border border-slate-800">
+                                        Quitter le site
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {site.announcement && (
+                        <div className="bg-teal-500 text-black text-[11px] sm:text-xs font-bold text-center py-1.5 px-3">{site.announcement}</div>
+                    )}
+                    <header className="sticky top-0 z-40 bg-slate-900/90 backdrop-blur-md border-b border-slate-800/80">
+                        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-3 sm:gap-6">
+                                <div className="relative shrink-0">
+                                    <button
+                                        onClick={() => setMenuOpen(o => !o)}
+                                        aria-label="Menu"
+                                        aria-expanded={menuOpen}
+                                        className="w-9 h-9 shrink-0 flex items-center justify-center bg-slate-950 border border-slate-800 rounded-full text-slate-200 hover:border-teal-500 transition">
+                                        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
+                                    </button>
+                                    {menuOpen && (
+                                        <>
+                                            <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)}></div>
+                                            <div className="absolute left-0 top-full mt-2 z-50 w-[min(88vw,340px)] max-h-[75vh] overflow-y-auto bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl p-3 space-y-3">
+                                                <form onSubmit={(e) => { handleSearchSubmit(e); setMenuOpen(false); }} className="relative">
+                                                    <input
+                                                        type="text"
+                                                        value={searchQuery}
+                                                        onChange={(e) => setSearchQuery(e.target.value)}
+                                                        placeholder="Rechercher un produit..."
+                                                        className="w-full bg-slate-950 border border-slate-800 rounded-full pl-10 pr-4 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-teal-500 transition"
+                                                    />
+                                                    <svg className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+                                                </form>
+                                                <div>
+                                                    <p className="px-3 pb-1 text-[10px] font-black uppercase tracking-wider text-slate-500">Catalogue</p>
+                                                    <button onClick={() => { navigateTo('category', null, null); setMenuOpen(false); }} className="w-full text-left px-3 py-2 rounded-xl text-xs font-extrabold uppercase text-teal-400 hover:bg-slate-950">Tout le catalogue</button>
+                                                    {categories.filter(c => !c.parent_id).map(cat => (
+                                                        <div key={cat.id}>
+                                                            <button onClick={() => { navigateTo('category', cat.id, null); setMenuOpen(false); }} className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold uppercase text-slate-100 hover:bg-slate-950 hover:text-teal-400 transition">{cat.name}</button>
+                                                            {categories.filter(sub => sub.parent_id === cat.id).map(sub => (
+                                                                <button key={sub.id} onClick={() => { navigateTo('category', sub.id, null); setMenuOpen(false); }} className="w-full text-left pl-7 pr-3 py-1.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-950 hover:text-teal-400 transition">↳ {sub.name}</button>
+                                                            ))}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                                <div className="border-t border-slate-800 pt-2">
+                                                    <p className="px-3 pb-1 text-[10px] font-black uppercase tracking-wider text-slate-500">Informations</p>
+                                                    {PAGE_LINKS.map(l => (
+                                                        <button key={l.key} onClick={() => { openPage(l.key); setMenuOpen(false); }} className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-slate-200 hover:bg-slate-950 hover:text-teal-400 transition">{l.label}</button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        </>
+                                    )}
+                                </div>
+                            <button onClick={() => navigateTo('home')} aria-label="Accueil Vapo d'Or" className="shrink-0"><VapoLogo /></button>
+
+                            <span className="flex-1"></span>
+
+                            <div className="flex items-center gap-2 ml-auto sm:ml-0">
+                                <button
+                                    onClick={() => { setCartNotice(null); setShowCartModal(true); }}
+                                    className="relative px-4 py-2 bg-teal-500 hover:bg-teal-400 text-black rounded-full font-bold text-xs flex items-center space-x-2 transition shadow-lg shadow-teal-500/20">
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
+                                    <span>Panier</span>
+                                    {cartCount > 0 && (
+                                        <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[10px] w-5 h-5 rounded-full flex items-center justify-center font-black shadow">
+                                            {cartCount}
+                                        </span>
+                                    )}
+                                </button>
+                            </div>
+                        </div>
+</header>
+
+                    <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8">
+                        {isLoading ? (
+                            <div className="text-center py-20 space-y-3">
+                                <div className="w-10 h-10 border-4 border-teal-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                                <p className="text-xs text-slate-400">Chargement du catalogue...</p>
+                            </div>
+                        ) : (
+                            <>
+                                {loadError && (
+                                    <div className="mb-6 bg-rose-500/10 border border-rose-500/30 text-rose-300 rounded-2xl p-4 text-xs flex items-center justify-between gap-3">
+                                        <span>Impossible de charger le catalogue : {loadError}</span>
+                                        <button onClick={loadDataFromSupabase} className="px-3 py-1.5 bg-rose-500 text-white rounded-xl font-bold shrink-0">Réessayer</button>
+                                    </div>
+                                )}
+
+                                {currentView === 'home' && (() => {
+                                    const visibleProducts = products.filter(isVisible);
+                                    const featuredList = visibleProducts.filter(p => p.is_featured).slice(0, 8);
+                                    const recentList = visibleProducts.slice().sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0)).slice(0, 12);
+                                    const countIn = (catId) => { const ids = getAllChildCategoryIds(catId); return visibleProducts.filter(p => ids.includes(p.category_id)).length; };
+                                    const onHeroCta = (bn) => {
+                                        if (bn.category_id && categories.some(c => c.id === bn.category_id)) navigateTo('category', bn.category_id, null);
+                                        else navigateTo('category', null, null);
+                                    };
+                                    return (
+                                    <div className="space-y-12 py-2">
+                                        <HeroCarousel banners={site.banners} onCta={onHeroCta} />
+                                        {recentList.length > 0 && (
+                                            <NewArrivals list={recentList} brands={brands} onOpen={openProduct} onAll={() => navigateTo('category', null, null)} />
+                                        )}
+                                        <div className="space-y-4">
+                                            <SectionHead title="Parcourir nos catégories" />
+                                            {adminUnlocked && <p className="text-[10px] text-slate-500">Admin : utilisez ◀ ▶ sur les cartes pour réorganiser</p>}
+                                            {categories.length === 0 ? (
+                                                <p className="text-xs text-slate-500">Aucune rubrique créée pour le moment.</p>
+                                            ) : (
+                                                <div className="grid grid-cols-2 gap-3 sm:gap-5">
+                                                    {categories.filter(c => !c.parent_id).map(cat => {
+                                                        const subcategories = categories.filter(sub => sub.parent_id === cat.id);
+                                                        return (
+                                                            <div key={cat.id} className="bg-slate-900/90 border border-slate-800/80 rounded-3xl overflow-hidden shadow-xl flex flex-col hover:border-teal-500/60 transition duration-300 group">
+                                                                <div className="relative h-32 sm:h-44 overflow-hidden bg-white flex items-center justify-center cursor-pointer" onClick={() => navigateTo('category', cat.id, null)}>
+                                                                    <img src={cat.image} alt={cat.name} loading="lazy" className="w-full h-full object-contain p-2 group-hover:scale-105 transition duration-500" />
+                                                                    <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent"></div>
+                                                                    <div className="absolute bottom-3 left-3 right-3">
+                                                                        <h3 className="font-display font-extrabold text-sm sm:text-lg text-white leading-tight">{cat.name}</h3>
+                                                                        <p className="text-[10px] text-slate-300">{countIn(cat.id)} produit(s)</p>
+                                                                    </div>
+                                                                    {adminUnlocked && (
+                                                                        <div className="absolute top-2 right-2 flex gap-1 z-10" onClick={(e) => e.stopPropagation()}>
+                                                                            <button onClick={() => moveCategoryOrder(cat, -1)} title="Déplacer avant" className="w-7 h-7 rounded-lg bg-slate-950/90 border border-teal-500/50 text-teal-400 text-xs font-black hover:bg-teal-500 hover:text-black transition">◀</button>
+                                                                            <button onClick={() => moveCategoryOrder(cat, 1)} title="Déplacer après" className="w-7 h-7 rounded-lg bg-slate-950/90 border border-teal-500/50 text-teal-400 text-xs font-black hover:bg-teal-500 hover:text-black transition">▶</button>
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                                {subcategories.length > 0 && (
+                                                                    <div className="p-2.5 flex flex-wrap gap-1">
+                                                                        {subcategories.map(sub => (
+                                                                            <button key={sub.id} onClick={() => navigateTo('category', sub.id, null)} className="text-[10px] bg-slate-950 border border-teal-500/30 px-2 py-0.5 rounded-full text-teal-400 hover:bg-teal-500 hover:text-black font-bold transition">
+                                                                                {sub.name}
+                                                                            </button>
+                                                                        ))}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {featuredList.length > 0 && (
+                                            <div className="space-y-4">
+                                                <SectionHead title="Meilleures ventes" actionLabel="Voir le catalogue" onAction={() => navigateTo('category', null, null)} />
+                                                <div className={gridClass}>{featuredList.map(renderCard)}</div>
+                                            </div>
+                                        )}
+
+
+                                        <div className="space-y-4">
+                                            <SectionHead title="Nos marques" />
+                                            {brands.length === 0 ? (
+                                                <p className="text-xs text-slate-500">Aucune marque créée pour le moment.</p>
+                                            ) : (
+                                                <div className="grid grid-cols-3 gap-2.5 sm:gap-4">
+                                                    {brands.map(b => {
+                                                        const count = products.filter(p => p.brand_id === b.id && isVisible(p)).length;
+                                                        return (
+                                                            <div
+                                                                key={b.id}
+                                                                onClick={() => navigateTo('brand', null, b.id)}
+                                                                className="bg-slate-900/90 border border-slate-800 p-3 sm:p-4 rounded-3xl flex flex-col items-center text-center cursor-pointer hover:border-teal-500 transition group">
+                                                                <div className="w-14 h-14 sm:w-16 sm:h-16 bg-white rounded-2xl border border-slate-800 flex items-center justify-center p-1.5 mb-2 sm:mb-3">
+                                                                    <img src={b.logo_url} alt={b.name} loading="lazy" className="max-w-full max-h-full object-contain group-hover:scale-105 transition" />
+                                                                </div>
+                                                                <h3 className="font-bold text-xs sm:text-sm text-slate-100 group-hover:text-teal-400 transition break-words">{b.name}</h3>
+                                                                <p className="text-[11px] text-slate-400 mt-1">{count} produit(s)</p>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <div className="rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-950 p-6 sm:p-10 grid md:grid-cols-3 gap-6 items-center">
+                                            <div className="md:col-span-2 space-y-3">
+                                                <h2 className="font-display text-2xl sm:text-3xl font-extrabold text-slate-100">{site.about_title}</h2>
+                                                <p className="text-sm text-slate-400 leading-relaxed whitespace-pre-line">{site.about_text}</p>
+                                            </div>
+                                            <div className="flex flex-col gap-2">
+                                                <a href={waLink("Bonjour Vapo d'Or, j'aimerais un conseil :")} target="_blank" rel="noopener noreferrer" className="text-center px-5 py-3 bg-teal-500 hover:bg-teal-400 text-black rounded-2xl text-xs font-black transition">Demander conseil sur WhatsApp</a>
+                                                <button onClick={() => openPage('guides')} className="px-5 py-3 border border-slate-700 hover:border-teal-500 text-slate-200 rounded-2xl text-xs font-bold transition">Lire nos guides</button>
+                                            </div>
+                                        </div>
+
+                                        <TrustStrip />
+                                    </div>
+                                    );
+                                })()}
+
+                                {currentView === 'page' && (() => {
+                                    const link = PAGE_LINKS.find(l => l.key === pageKey) || PAGE_LINKS[0];
+                                    const text = site.pages[link.key] || '';
+                                    const [first, ...restParts] = text.split('\n');
+                                    const rest = restParts.join('\n').trim();
+                                    const blocks = rest.split(/\n\s*\n/).filter(Boolean);
+                                    return (
+                                        <div className="max-w-3xl mx-auto space-y-6 py-4">
+                                            <div className="flex flex-wrap gap-2">
+                                                {PAGE_LINKS.map(l => (
+                                                    <button key={l.key} onClick={() => openPage(l.key)} className={`px-3 py-1.5 rounded-full text-[11px] font-bold border transition ${l.key === link.key ? 'bg-teal-500 text-black border-teal-500' : 'border-slate-800 text-slate-400 hover:border-teal-500'}`}>{l.label}</button>
+                                                ))}
+                                            </div>
+                                            <h1 className="font-display text-3xl sm:text-4xl font-extrabold text-slate-100">{first}</h1>
+                                            <div className="space-y-4">
+                                                {blocks.map((b, i) => {
+                                                    const lines = b.split('\n');
+                                                    const isHeading = lines.length > 1 && lines[0].length < 60 && !/[.!?:]$/.test(lines[0]);
+                                                    return (
+                                                        <div key={i} className="bg-slate-900/70 border border-slate-800 rounded-2xl p-5">
+                                                            {isHeading && <h3 className="text-sm font-black text-teal-400 mb-1.5">{lines[0]}</h3>}
+                                                            <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-line">{isHeading ? lines.slice(1).join('\n') : b}</p>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                            {link.key === 'contact' && (
+                                                <div className="grid sm:grid-cols-2 gap-3">
+                                                    <a href={waLink("Bonjour Vapo d'Or, j'ai une question :")} target="_blank" rel="noopener noreferrer" className="text-center px-5 py-3 bg-teal-500 hover:bg-teal-400 text-black rounded-2xl text-xs font-black transition">WhatsApp : {settings.whatsappNumber}</a>
+                                                    {settings.messengerUrl && <a href={settings.messengerUrl} target="_blank" rel="noopener noreferrer" className="text-center px-5 py-3 border border-slate-700 hover:border-teal-500 text-slate-200 rounded-2xl text-xs font-bold transition">Messenger</a>}
+                                                    {site.address && <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 text-xs text-slate-300">📍 {site.address}</div>}
+                                                    {site.hours && <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 text-xs text-slate-300">🕘 {site.hours}</div>}
+                                                    {site.email && <div className="bg-slate-900/70 border border-slate-800 rounded-2xl p-4 text-xs text-slate-300 sm:col-span-2">✉️ {site.email}</div>}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })()}
+
+                                {currentView === 'search' && (
+                                    <div className="space-y-8">
+                                        <div className="border-b border-slate-800 pb-4">
+                                            <h2 className="text-2xl font-black text-slate-100">Résultats de recherche</h2>
+                                            <p className="text-xs text-teal-400 mt-1">Recherche associée : "{searchQuery}" ({searchResults.length} résultat(s) trouvé(s))</p>
+                                        </div>
+
+                                        {searchResults.length === 0 ? (
+                                            <div className="text-center py-16 space-y-3 bg-slate-900/40 rounded-3xl border border-slate-800">
+                                                <p className="text-sm text-slate-400">Aucun produit ne correspond à votre recherche.</p>
+                                                <button onClick={() => navigateTo('home')} className="px-4 py-2 bg-teal-500 text-black font-bold text-xs rounded-xl">Retour à l'accueil</button>
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-5">
+                                                <FilterBar list={searchResults} brands={brands} filters={filters} onChange={setFilters} />
+                                                {applyFilters(searchResults, filters).length === 0
+                                                    ? <p className="text-center text-sm text-slate-500 py-8">Aucun produit ne correspond à ces filtres.</p>
+                                                    : <div className={gridClass}>{applyFilters(searchResults, filters).map(renderCard)}</div>}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {currentView === 'category' && (
+                                    <div className="space-y-8">
+                                        <div className="border-b border-slate-800 pb-4 space-y-4">
+                                            <h2 className="text-2xl font-black text-slate-100">{activeCategory ? activeCategory.name : 'Catalogue'}</h2>
+
+                                            {activeCategory && activeCategory.price_table && activeCategory.price_table.length > 0 && (
+                                                <div className="bg-slate-900/90 border border-teal-500/30 rounded-2xl p-4 overflow-x-auto shadow-lg">
+                                                    <h3 className="text-xs font-black uppercase text-teal-400 tracking-wider mb-3">Grille tarifaire du dossier</h3>
+                                                    <table className="w-full text-left text-xs">
+                                                        <thead>
+                                                            <tr className="border-b border-slate-800 text-slate-400">
+                                                                <th className="pb-2 font-bold">Désignation / Volume / Option</th>
+                                                                <th className="pb-2 font-bold text-right">Prix</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody className="divide-y divide-slate-800/60">
+                                                            {activeCategory.price_table.map((row, idx) => (
+                                                                <tr key={idx} className="hover:bg-slate-800/40">
+                                                                    <td className="py-2.5 text-slate-200 font-medium">{row.label}</td>
+                                                                    <td className="py-2.5 text-teal-400 font-black text-right">{row.price !== '' && !isNaN(row.price) ? fmt(row.price) + ' Ar' : row.price}</td>
+                                                                </tr>
+                                                            ))}
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            )}
+
+                                            {activeCategory && (() => {
+                                                const subcategories = categories.filter(sub => sub.parent_id === activeCategory.id);
+                                                return subcategories.length > 0 ? (
+                                                    <div className="mt-3 bg-slate-900 border border-slate-800 p-3 rounded-2xl space-y-1.5">
+                                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Sous-rubriques & dossiers enfants :</span>
+                                                        <div className="flex flex-wrap gap-1.5">
+                                                            {subcategories.map(sub => (
+                                                                <button key={sub.id} onClick={() => navigateTo('category', sub.id, null)} className="text-xs bg-slate-950 border border-teal-500/30 px-3 py-1 rounded-xl text-teal-400 hover:bg-teal-500 hover:text-black font-bold transition flex items-center space-x-1">
+                                                                    <span>📁</span>
+                                                                    <span>{sub.name}</span>
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                ) : null;
+                                            })()}
+                                        </div>
+
+                                        {(() => {
+                                            const validCategoryIds = selectedCategoryId ? getAllChildCategoryIds(selectedCategoryId) : null;
+                                            const rawList = products.filter(p => isVisible(p) && (!validCategoryIds || validCategoryIds.includes(p.category_id)));
+                                            const list = applyFilters(rawList, filters);
+                                            return rawList.length === 0 ? (
+                                                <p className="text-center text-sm text-slate-500 py-12">Aucun produit dans ce dossier pour le moment.</p>
+                                            ) : (
+                                                <div className="space-y-5">
+                                                    <FilterBar list={rawList} brands={brands} filters={filters} onChange={setFilters} />
+                                                    {list.length === 0
+                                                        ? <p className="text-center text-sm text-slate-500 py-8">Aucun produit ne correspond à ces filtres.</p>
+                                                        : <div className={gridClass}>{list.map(renderCard)}</div>}
+                                                </div>
+                                            );
+                                        })()}
+                                    </div>
+                                )}
+
+                                {currentView === 'brand' && (
+                                    <div className="space-y-8">
+                                        <div className="border-b border-slate-800 pb-4 flex items-center space-x-4">
+                                            {activeBrand && (
+                                                <div className="w-14 h-14 bg-white rounded-2xl border border-slate-800 flex items-center justify-center p-1">
+                                                    <img src={activeBrand.logo_url} alt={activeBrand.name} className="max-w-full max-h-full object-contain" />
+                                                </div>
+                                            )}
+                                            <div>
+                                                <h2 className="text-2xl font-black text-slate-100">{activeBrand ? activeBrand.name : 'Marque'}</h2>
+                                                <p className="text-xs text-slate-400 mt-1">{activeBrand?.description || 'Tous les produits de cette marque.'}</p>
+                                            </div>
+                                        </div>
+
+                                        {(() => {
+                                            const rawList = products.filter(p => p.brand_id === selectedBrandId && isVisible(p));
+                                            const list = applyFilters(rawList, filters);
+                                            return rawList.length === 0 ? (
+                                                <p className="text-center text-sm text-slate-500 py-12">Aucun produit pour cette marque pour le moment.</p>
+                                            ) : (
+                                                <div className="space-y-5">
+                                                    <FilterBar list={rawList} brands={brands} filters={filters} onChange={setFilters} />
+                                                    {list.length === 0
+                                                        ? <p className="text-center text-sm text-slate-500 py-8">Aucun produit ne correspond à ces filtres.</p>
+                                                        : <div className={gridClass}>{list.map(renderCard)}</div>}
+                                                </div>
+                                            );
+                                        })()}
+                                    </div>
+                                )}
+                            </>
+                        )}
+
+                        {currentView === 'admin' && !adminUnlocked && (
+                            <div className="text-center py-20 space-y-4">
+                                <p className="text-sm text-slate-400">Cet espace est réservé à l'administrateur.</p>
+                                <button onClick={() => setShowAuthModal(true)} className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-bold text-xs uppercase tracking-wider">Se connecter</button>
+                            </div>
+                        )}
+
+                        {currentView === 'admin' && adminUnlocked && (
+                            <div className="space-y-6">
+                                <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 border-b border-slate-800 pb-4">
+                                    <div className="flex flex-wrap gap-2">
+                                        <button onClick={() => setAdminTab('products')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${adminTab === 'products' ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-slate-400'}`}>1. Produits & Tarifs</button>
+                                        <button onClick={() => setAdminTab('bulk_pricing')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${adminTab === 'bulk_pricing' ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-slate-400'}`}>2. Changement Collectif Prix</button>
+                                        <button onClick={() => setAdminTab('categories')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${adminTab === 'categories' ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-slate-400'}`}>3. Rubriques & Marques</button>
+                                        <button onClick={() => setAdminTab('settings')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${adminTab === 'settings' ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-slate-400'}`}>4. WhatsApp / Modèle DIY</button>
+                                        <button onClick={() => setAdminTab('shop')} className={`px-4 py-2 rounded-xl text-xs font-bold transition ${adminTab === 'shop' ? 'bg-indigo-600 text-white' : 'bg-slate-900 text-slate-400'}`}>5. Boutique & Pages</button>
+                                    </div>
+                                    <button onClick={handleLogout} className="px-3 py-1.5 bg-rose-500/10 text-rose-400 border border-rose-500/30 rounded-xl text-xs font-bold hover:bg-rose-500 hover:text-white transition">
+                                        Se déconnecter
+                                    </button>
+                                </div>
+
+                                {adminTab === 'bulk_pricing' && (
+                                    <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-2xl mx-auto space-y-6">
+                                        <div className="border-b border-slate-800 pb-4">
+                                            <h3 className="text-sm font-bold uppercase text-indigo-400">Modification Collective des Prix</h3>
+                                            <p className="text-xs text-slate-400 mt-1">Fixez le même prix pour tous les produits d'une marque ou d'un dossier en une seule fois.</p>
+                                        </div>
+
+                                        <form onSubmit={handleBulkPriceUpdate} className="space-y-4 text-xs">
+                                            <div>
+                                                <label className="font-bold text-slate-300 uppercase">Cibler par Marque (Optionnel)</label>
+                                                <select
+                                                    value={bulkBrandId}
+                                                    onChange={e => setBulkBrandId(e.target.value)}
+                                                    className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200">
+                                                    <option value="">-- Toutes les marques --</option>
+                                                    {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                                                </select>
+                                            </div>
+
+                                            <div>
+                                                <label className="font-bold text-slate-300 uppercase">Cibler par Dossier / Rubrique (Optionnel)</label>
+                                                <select
+                                                    value={bulkCategoryId}
+                                                    onChange={e => setBulkCategoryId(e.target.value)}
+                                                    className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200">
+                                                    <option value="">-- Tous les dossiers --</option>
+                                                    {categories.map(c => (
+                                                        <option key={c.id} value={c.id}>
+                                                            {c.parent_id ? `↳ ${c.name}` : c.name}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                            </div>
+
+                                            <div>
+                                                <label className="font-bold text-slate-300 uppercase">Nouveau prix (Ar)</label>
+                                                <input
+                                                    type="number"
+                                                    min="0"
+                                                    step="any"
+                                                    value={bulkValue}
+                                                    onChange={e => setBulkValue(e.target.value)}
+                                                    placeholder="ex: 25000"
+                                                    className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-teal-400 font-bold"
+                                                    required
+                                                />
+                                            </div>
+
+                                            <button
+                                                type="submit"
+                                                disabled={bulkBusy}
+                                                className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-xl font-black text-xs uppercase tracking-wider transition shadow-lg shadow-indigo-600/30">
+                                                {bulkBusy ? 'Application en cours...' : 'Appliquer ce prix'}
+                                            </button>
+                                        </form>
+                                    </div>
+                                )}
+
+                                {adminTab === 'bulk_pricing' && (
+                                    <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-2xl mx-auto space-y-6">
+                                        <div className="border-b border-slate-800 pb-4">
+                                            <h3 className="text-sm font-bold uppercase text-indigo-400">E-liquide DIY : appliquer le modèle de prix à tout un dossier</h3>
+                                            <p className="text-xs text-slate-400 mt-1">Pour chaque produit du dossier, les prix du modèle (volume × nicotine) sont appliqués : les déclinaisons qui existent déjà sont mises à jour, les manquantes sont créées. Les autres déclinaisons ne sont pas touchées.</p>
+                                        </div>
+
+                                        <div className="space-y-4 text-xs">
+                                            <div>
+                                                <label className="font-bold text-slate-300 uppercase">Dossier cible</label>
+                                                <select
+                                                    value={diyBulkCatId}
+                                                    onChange={e => setDiyBulkCatId(e.target.value)}
+                                                    className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200">
+                                                    <option value="">-- Choisir (ex : E-liquide DIY) --</option>
+                                                    {categories.map(c => (
+                                                        <option key={c.id} value={c.id}>{c.parent_id ? `↳ ${c.name}` : c.name}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+
+                                            <div>
+                                                <label className="font-bold text-slate-300 uppercase block mb-1">Volumes à appliquer</label>
+                                                <div className="flex flex-wrap gap-2">
+                                                    {DIY_VOLUMES.map(vol => (
+                                                        <label key={vol} className="flex items-center space-x-1 text-[11px] bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800 cursor-pointer">
+                                                            <input type="checkbox" checked={!!diyBulkVols[vol]} onChange={e => setDiyBulkVols({ ...diyBulkVols, [vol]: e.target.checked })} className="accent-teal-500" />
+                                                            <span>{vol}</span>
+                                                        </label>
+                                                    ))}
+                                                </div>
+                                            </div>
+
+                                            <div>
+                                                <label className="font-bold text-slate-300 uppercase block mb-1">Taux de nicotine à appliquer</label>
+                                                <div className="flex flex-wrap gap-2">
+                                                    {DIY_NICOTINES.map(nic => (
+                                                        <label key={nic} className="flex items-center space-x-1 text-[11px] bg-slate-950 px-2.5 py-1.5 rounded-lg border border-slate-800 cursor-pointer">
+                                                            <input type="checkbox" checked={!!diyBulkNics[nic]} onChange={e => setDiyBulkNics({ ...diyBulkNics, [nic]: e.target.checked })} className="accent-teal-500" />
+                                                            <span>{nic}</span>
+                                                        </label>
+                                                    ))}
+                                                </div>
+                                            </div>
+
+                                            <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-3">
+                                                <p className="text-[11px] text-slate-400">
+                                                    Prix renseignés dans le modèle : <strong className="text-teal-400">{Object.values(diyPresetPrices).filter(v => String(v).trim() !== '').length}</strong> / {DIY_VOLUMES.length * DIY_NICOTINES.length}
+                                                </p>
+                                                <button type="button" onClick={() => setAdminTab('settings')} className="px-3 py-1.5 bg-teal-500/10 text-teal-400 border border-teal-500/30 rounded-lg text-[10px] font-bold shrink-0">Modifier le modèle</button>
+                                            </div>
+
+                                            <button
+                                                type="button"
+                                                onClick={handleApplyDiyToCategory}
+                                                disabled={diyBulkBusy}
+                                                className="w-full py-3.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-xl font-black text-xs uppercase tracking-wider transition shadow-lg shadow-indigo-600/30">
+                                                {diyBulkBusy ? 'Application en cours...' : 'Appliquer le modèle DIY à tout le dossier'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* CONFIGURATEUR DE TABLEAU DE PRIX D'UN DOSSIER */}
+                                {adminTab === 'bulk_pricing' && (
+                                    <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-2xl mx-auto space-y-6">
+                                        <div className="border-b border-slate-800 pb-4">
+                                            <h3 className="text-sm font-bold uppercase text-indigo-400">Tableau de prix d'un dossier</h3>
+                                            <p className="text-xs text-slate-400 mt-1">Créez une grille tarifaire (désignation + prix). Elle s'affiche tout en haut de la page du dossier choisi, au-dessus des produits.</p>
+                                        </div>
+
+                                        <div className="space-y-4 text-xs">
+                                            <div>
+                                                <label className="font-bold text-slate-300 uppercase">Dossier / Rubrique</label>
+                                                <select
+                                                    value={ptCatId}
+                                                    onChange={e => selectPriceTableCategory(e.target.value)}
+                                                    className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200">
+                                                    <option value="">-- Choisir un dossier --</option>
+                                                    {categories.map(c => (
+                                                        <option key={c.id} value={c.id}>
+                                                            {c.parent_id ? `↳ ${c.name}` : c.name}{c.price_table && c.price_table.length > 0 ? '  ✓ tableau' : ''}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                            </div>
+
+                                            {ptCatId && (
+                                                <>
+                                                    <div className="space-y-2">
+                                                        <div className="flex justify-between items-center">
+                                                            <label className="font-bold text-teal-400 uppercase">Lignes du tableau</label>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setPtRows([...ptRows, { label: '', price: '' }])}
+                                                                className="px-2.5 py-1 bg-teal-500/10 text-teal-400 border border-teal-500/30 rounded-lg text-[10px] font-bold">
+                                                                + Ligne de prix
+                                                            </button>
+                                                        </div>
+                                                        <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                                                            {ptRows.map((row, index) => (
+                                                                <div key={index} className="flex gap-2 items-center">
+                                                                    <input
+                                                                        type="text"
+                                                                        value={row.label}
+                                                                        onChange={e => setPtRows(ptRows.map((r, i) => i === index ? { ...r, label: e.target.value } : r))}
+                                                                        placeholder="Désignation (ex: 10ml, Pack 3...)"
+                                                                        className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-xs"
+                                                                    />
+                                                                    <input
+                                                                        type="text"
+                                                                        value={row.price}
+                                                                        onChange={e => setPtRows(ptRows.map((r, i) => i === index ? { ...r, price: e.target.value } : r))}
+                                                                        placeholder="Prix (Ar)"
+                                                                        className="w-28 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-2 text-xs text-teal-400 font-bold"
+                                                                    />
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => setPtRows(ptRows.length > 1 ? ptRows.filter((_, i) => i !== index) : [{ label: '', price: '' }])}
+                                                                        className="text-rose-400 text-xs font-bold px-1">✕</button>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Aperçu tel qu'il apparaîtra en haut du dossier */}
+                                                    {ptRows.some(r => r.label.trim() !== '' || String(r.price).trim() !== '') && (
+                                                        <div className="bg-slate-950 border border-teal-500/30 rounded-2xl p-4 overflow-x-auto">
+                                                            <h4 className="text-[10px] font-black uppercase text-teal-400 tracking-wider mb-2">Aperçu - Grille tarifaire du dossier</h4>
+                                                            <table className="w-full text-left text-xs">
+                                                                <tbody className="divide-y divide-slate-800/60">
+                                                                    {ptRows.filter(r => r.label.trim() !== '' || String(r.price).trim() !== '').map((row, idx) => (
+                                                                        <tr key={idx}>
+                                                                            <td className="py-2 text-slate-200 font-medium">{row.label}</td>
+                                                                            <td className="py-2 text-teal-400 font-black text-right">{String(row.price).trim() !== '' && !isNaN(row.price) ? fmt(row.price) + ' Ar' : row.price}</td>
+                                                                        </tr>
+                                                                    ))}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                    )}
+
+                                                    <div className="flex gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={handleSavePriceTable}
+                                                            disabled={ptBusy}
+                                                            className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded-xl font-black text-xs uppercase tracking-wider transition shadow-lg shadow-indigo-600/30">
+                                                            {ptBusy ? 'Enregistrement...' : 'Enregistrer le tableau'}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={handleDeletePriceTable}
+                                                            disabled={ptBusy}
+                                                            className="px-4 py-3 bg-rose-500/10 text-rose-400 border border-rose-500/30 hover:bg-rose-500 hover:text-white disabled:opacity-50 rounded-xl font-bold text-xs transition">
+                                                            Retirer le tableau
+                                                        </button>
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {adminTab === 'products' && (
+                                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                                        <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl space-y-4">
+                                            <h2 className="text-sm font-bold uppercase text-indigo-400">
+                                                {editingProductId ? 'Modifier le Produit' : 'Ajouter un Produit'}
+                                            </h2>
+                                            <form onSubmit={handleSaveProduct} className="space-y-4">
+                                                <datalist id="ohm-list">
+                                                    {['0.15Ω', '0.2Ω', '0.3Ω', '0.4Ω', '0.6Ω', '0.8Ω', '1.0Ω', '1.2Ω', '1.4Ω', '1.6Ω'].map(o => <option key={o} value={o} />)}
+                                                </datalist>
+                                                <div>
+                                                    <label className="text-xs text-slate-400 font-bold uppercase">Nom du Produit *</label>
+                                                    <input type="text" value={newProduct.name} onChange={e => setNewProduct({ ...newProduct, name: e.target.value })} placeholder="ex: DIY A&L Ragnarok" className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm" required />
+                                                </div>
+
+                                                <div>
+                                                    <label className="text-xs text-amber-400 font-bold uppercase">Saveur / Arôme principal (Optionnel)</label>
+                                                    <input type="text" value={newProduct.flavor} onChange={e => setNewProduct({ ...newProduct, flavor: e.target.value })} placeholder="ex: Fruits rouges frais..." className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm" />
+                                                </div>
+
+                                                <div className="grid grid-cols-2 gap-2">
+                                                    <div>
+                                                        <label className="text-xs text-slate-400 font-bold uppercase">Marque</label>
+                                                        <select value={newProduct.brand_id} onChange={e => setNewProduct({ ...newProduct, brand_id: e.target.value })} className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm">
+                                                            <option value="">Sélectionner (optionnel)</option>
+                                                            {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                                                        </select>
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-xs text-slate-400 font-bold uppercase">Rubrique / Dossier</label>
+                                                        <select value={newProduct.category_id} onChange={e => setNewProduct({ ...newProduct, category_id: e.target.value })} className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm">
+                                                            <option value="">Sélectionner (optionnel)</option>
+                                                            {categories.map(c => (
+                                                                <option key={c.id} value={c.id}>
+                                                                    {c.parent_id ? `↳ ${c.name}` : c.name}
+                                                                </option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                                <label className="flex items-center gap-3 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 cursor-pointer">
+                                                    <input type="checkbox" checked={!!newProduct.is_featured} onChange={e => setNewProduct({ ...newProduct, is_featured: e.target.checked })} className="w-4 h-4 accent-teal-500" />
+                                                    <span className="text-xs font-bold text-slate-200">★ Afficher dans « Meilleures ventes » sur l'accueil</span>
+                                                </label>
+                                                <label className="flex items-center gap-3 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 cursor-pointer">
+                                                    <input type="checkbox" checked={!!newProduct.is_promo} onChange={e => setNewProduct({ ...newProduct, is_promo: e.target.checked })} className="w-4 h-4 accent-rose-500" />
+                                                    <span className="text-xs font-bold text-slate-200">% Produit en promotion (badge « Promo » + recherche « promotion »)</span>
+                                                </label>
+                                                <div>
+                                                    <label className="text-xs text-slate-400 font-bold uppercase">Description rapide</label>
+                                                    <input type="text" value={newProduct.short_description} onChange={e => setNewProduct({ ...newProduct, short_description: e.target.value })} placeholder="Résumé..." className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm" />
+                                                </div>
+
+                                                <div>
+                                                    <label className="text-xs text-teal-400 font-bold uppercase">Contenu de la boîte (Box Content)</label>
+                                                    <textarea value={newProduct.box_content} onChange={e => setNewProduct({ ...newProduct, box_content: e.target.value })} placeholder="ex: 1x Flacon..." className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm" rows="2"></textarea>
+                                                </div>
+
+                                                <div>
+                                                    <label className="text-xs text-slate-400 font-bold uppercase">Photo Principale</label>
+                                                    <input type="file" accept="image/*" onChange={handleLocalImageUpload} className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-400" />
+                                                    {newProduct.main_image_url && <img src={newProduct.main_image_url} alt="Aperçu" className="w-16 h-16 object-contain rounded-xl mt-2 border border-slate-800 bg-white p-1" />}
+                                                </div>
+
+                                                {/* CARACTÉRISTIQUES TECHNIQUES */}
+                                                <div className="bg-slate-950 border border-indigo-500/30 p-4 rounded-2xl space-y-3">
+                                                    <h3 className="text-xs font-black uppercase text-indigo-400 tracking-wider">🔧 Caractéristiques techniques</h3>
+                                                    <p className="text-[10px] text-slate-400">Choisissez le type de produit : les champs utiles (batterie, puissance, résistance...) apparaissent. Les champs laissés vides ne sont pas affichés aux clients.</p>
+                                                    <div className="bg-slate-900 border border-teal-500/30 rounded-xl p-3 space-y-2">
+                                                        <h4 className="text-[11px] font-black uppercase text-teal-400 tracking-wider">🔎 Trouver les infos du produit</h4>
+                                                        <button type="button" onClick={lookupProductInfo} disabled={lookupBusy} className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 text-white rounded-lg text-[11px] font-black uppercase tracking-wider transition">
+                                                            {lookupBusy ? 'Recherche en cours (10 à 40 secondes)...' : '⚡ Recherche automatique sur internet'}
+                                                        </button>
+                                                        {lookupInfo && (
+                                                            <div className="bg-slate-950 border border-slate-800 rounded-xl p-2.5 space-y-1.5 text-[10px]">
+                                                                <p className={lookupInfo.confidence === 'high' ? 'text-emerald-400 font-bold' : 'text-amber-400 font-bold'}>
+                                                                    {lookupInfo.confidence === 'high' ? 'Produit identifié sur une source fiable.' : lookupInfo.confidence === 'medium' ? 'Correspondance probable : vérifiez les valeurs.' : 'Résultat peu fiable : vérifiez tout avant d\'ajouter.'}
+                                                                </p>
+                                                                {lookupInfo.notes && <p className="text-slate-300">{lookupInfo.notes}</p>}
+                                                                {lookupInfo.brandName && <p className="text-slate-400">Marque détectée : {lookupInfo.brandName} (absente de votre liste de marques).</p>}
+                                                                {lookupInfo.sources.length > 0 && (
+                                                                    <div className="space-y-0.5">
+                                                                        <span className="text-slate-500 font-bold uppercase">Sources consultées :</span>
+                                                                        {lookupInfo.sources.filter(src => /^https?:\/\//i.test(src.url)).map((src, i) => (
+                                                                            <a key={i} href={src.url} target="_blank" rel="noopener noreferrer" className="block text-teal-400 hover:underline truncate">{src.title || src.url}</a>
+                                                                        ))}
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        )}
+                                                        <p className="text-[10px] text-slate-500 pt-1">Ou en manuel (gratuit) :</p>
+                                                        <p className="text-[10px] text-slate-400">1) Tapez le nom du produit ci-dessus, puis cliquez sur « Rechercher ». 2) Sur le site du fabricant ou d'un revendeur, copiez le tableau « Spécifications ». 3) Collez-le ci-dessous : le site reconnaît la batterie, la puissance, les ohms, etc.</p>
+                                                        <div className="flex flex-wrap gap-2">
+                                                            <button type="button" onClick={() => openWebSearch(false)} className="px-3 py-1.5 bg-teal-500 hover:bg-teal-400 text-black rounded-lg text-[11px] font-black">Rechercher la fiche technique</button>
+                                                            <button type="button" onClick={() => openWebSearch(true)} className="px-3 py-1.5 bg-slate-950 border border-slate-800 text-slate-300 rounded-lg text-[11px] font-bold">Voir les images</button>
+                                                        </div>
+                                                        <textarea value={specImportText} onChange={e => setSpecImportText(e.target.value)} rows="4" placeholder={"Collez ici la fiche technique, par exemple :\nBattery Capacity: 1000mAh\nCoil Resistance: 0.6Ω\nOutput Power: 5-25W"} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs"></textarea>
+                                                        <button type="button" onClick={runSpecImport} className="px-3 py-1.5 bg-teal-500/10 text-teal-400 border border-teal-500/30 rounded-lg text-[11px] font-bold">Extraire les caractéristiques</button>
+
+                                                        {specImportItems.length > 0 && (
+                                                            <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 space-y-2">
+                                                                <p className="text-[10px] text-slate-400">{specImportItems.length} élément(s) trouvé(s). Décochez ce que vous ne voulez pas, et vérifiez les valeurs.</p>
+                                                                {specImportType && !newProduct.product_type && (
+                                                                    <p className="text-[10px] text-indigo-300 font-bold">Type détecté : {PRODUCT_TYPES[specImportType]?.label || 'non reconnu'}</p>
+                                                                )}
+                                                                <div className="space-y-1 max-h-52 overflow-y-auto pr-1">
+                                                                    {specImportItems.map((it, i) => (
+                                                                        <label key={i} className="flex items-start gap-2 text-xs cursor-pointer">
+                                                                            <input type="checkbox" checked={it.checked} onChange={e => setSpecImportItems(specImportItems.map((x, n) => n === i ? { ...x, checked: e.target.checked } : x))} className="accent-teal-500 mt-0.5" />
+                                                                            <span className="font-bold text-slate-300 shrink-0">{it.label} :</span>
+                                                                            <span className="text-teal-400 font-semibold whitespace-pre-line break-words">{it.value}</span>
+                                                                        </label>
+                                                                    ))}
+                                                                </div>
+                                                                <div className="flex gap-2">
+                                                                    <button type="button" onClick={applySpecImport} className="px-3 py-1.5 bg-teal-500 hover:bg-teal-400 text-black rounded-lg text-[11px] font-black">Ajouter au produit</button>
+                                                                    <button type="button" onClick={() => setSpecImportItems([])} className="px-3 py-1.5 bg-slate-800 rounded-lg text-[11px] font-bold">Annuler</button>
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+
+                                                    <select value={newProduct.product_type || ''} onChange={e => changeProductType(e.target.value)} className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-sm">
+                                                        <option value="">-- Type de produit (optionnel) --</option>
+                                                        {Object.entries(PRODUCT_TYPES).map(([key, t]) => <option key={key} value={key}>{t.label}</option>)}
+                                                    </select>
+
+                                                    <div className="space-y-2">
+                                                        {(newProduct.specs || []).map((sp, i) => {
+                                                            const def = specFieldDef(newProduct.product_type, sp.label);
+                                                            return (
+                                                                <div key={i} className="flex gap-2 items-center">
+                                                                    <input type="text" value={sp.label} onChange={e => updateSpecRow(i, 'label', e.target.value)} placeholder="Caractéristique" className="w-2/5 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-bold" />
+                                                                    <input type="text" value={sp.value} list={def?.options ? `spec-opts-${i}` : undefined} onChange={e => updateSpecRow(i, 'value', e.target.value)} placeholder={def?.placeholder || (def?.options ? 'Choisir ou saisir' : 'Valeur')} className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-teal-400 font-bold" />
+                                                                    {def?.options && <datalist id={`spec-opts-${i}`}>{def.options.map(o => <option key={o} value={o} />)}</datalist>}
+                                                                    <button type="button" onClick={() => removeSpecRow(i)} className="text-rose-400 text-xs font-bold px-1">✕</button>
+                                                                </div>
+                                                            );
+                                                        })}
+                                                    </div>
+
+                                                    {(() => {
+                                                        const used = new Set((newProduct.specs || []).map(sp => sp.label));
+                                                        const suggestions = [...(PRODUCT_TYPES[newProduct.product_type]?.fields || []), ...COMMON_SPEC_FIELDS].filter(f => !used.has(f.label));
+                                                        return suggestions.length > 0 ? (
+                                                            <div className="space-y-1">
+                                                                <span className="text-[10px] font-bold text-slate-400 uppercase block">Ajouter un champ :</span>
+                                                                <div className="flex flex-wrap gap-1">
+                                                                    {suggestions.map(f => (
+                                                                        <button key={f.label} type="button" onClick={() => addSpecRow(f.label)} className="text-[10px] bg-slate-900 border border-slate-800 hover:border-teal-500 text-slate-300 px-2 py-1 rounded-lg font-semibold transition">+ {f.label}</button>
+                                                                    ))}
+                                                                </div>
+                                                            </div>
+                                                        ) : null;
+                                                    })()}
+                                                    <button type="button" onClick={() => addSpecRow('')} className="px-3 py-1.5 bg-teal-500/10 text-teal-400 border border-teal-500/30 rounded-lg text-[10px] font-bold">+ Caractéristique personnalisée</button>
+                                                </div>
+
+                                                {/* GÉNÉRATEUR RAPIDE DE MATRICE DIY / DÉCLINAISONS */}
+                                                <div className="bg-slate-950 border border-teal-500/40 p-4 rounded-2xl space-y-3">
+                                                    <h3 className="text-xs font-black uppercase text-teal-400 tracking-wider">⚡ Générateur Rapide DIY / Multi-options</h3>
+                                                    <p className="text-[10px] text-slate-400">Générez automatiquement toutes les combinaisons de tailles et taux de nicotine en un clic.</p>
+                                                    
+                                                    <div className="flex items-center space-x-2 py-1">
+                                                        <input 
+                                                            type="checkbox" 
+                                                            id="usePreset" 
+                                                            checked={diyUsePreset} 
+                                                            onChange={e => setDiyUsePreset(e.target.checked)} 
+                                                            className="accent-teal-500 cursor-pointer w-4 h-4" 
+                                                        />
+                                                        <label htmlFor="usePreset" className="text-[10px] font-bold text-teal-300 uppercase cursor-pointer">
+                                                            Utiliser mon modèle de prix préconfiguré (Paramètres)
+                                                        </label>
+                                                    </div>
+
+                                                    {!diyUsePreset && (
+                                                        <div>
+                                                            <label className="text-[10px] font-bold text-slate-300 uppercase">Prix unique (Ar) appliqué à toutes les combinaisons (modifiable ensuite)</label>
+                                                            <input 
+                                                                type="number" 
+                                                                value={diyBasePrice} 
+                                                                onChange={e => setDiyBasePrice(e.target.value)} 
+                                                                placeholder="ex: 15000" 
+                                                                className="w-full mt-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-teal-400 font-bold" 
+                                                            />
+                                                        </div>
+                                                    )}
+
+                                                    <div>
+                                                        <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Volumes (Tailles) :</label>
+                                                        <div className="flex flex-wrap gap-2">
+                                                            {Object.keys(diySelectedVolumes).map(vol => (
+                                                                <label key={vol} className="flex items-center space-x-1 text-[11px] bg-slate-900 px-2 py-1 rounded-lg border border-slate-800 cursor-pointer">
+                                                                    <input 
+                                                                        type="checkbox" 
+                                                                        checked={diySelectedVolumes[vol]} 
+                                                                        onChange={e => setDiySelectedVolumes({...diySelectedVolumes, [vol]: e.target.checked})} 
+                                                                        className="accent-teal-500" 
+                                                                    />
+                                                                    <span>{vol}</span>
+                                                                </label>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+
+                                                    <div>
+                                                        <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">Taux de Nicotine :</label>
+                                                        <div className="flex flex-wrap gap-2">
+                                                            {Object.keys(diySelectedNicotines).map(nic => (
+                                                                <label key={nic} className="flex items-center space-x-1 text-[11px] bg-slate-900 px-2 py-1 rounded-lg border border-slate-800 cursor-pointer">
+                                                                    <input 
+                                                                        type="checkbox" 
+                                                                        checked={diySelectedNicotines[nic]} 
+                                                                        onChange={e => setDiySelectedNicotines({...diySelectedNicotines, [nic]: e.target.checked})} 
+                                                                        className="accent-teal-500" 
+                                                                    />
+                                                                    <span>{nic}</span>
+                                                                </label>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+
+                                                    <button 
+                                                        type="button" 
+                                                        onClick={generateDiyVariants} 
+                                                        className="w-full py-2 bg-teal-500 hover:bg-teal-400 text-black font-black text-xs uppercase rounded-xl transition shadow">
+                                                        Générer les déclinaisons automatiques
+                                                    </button>
+                                                </div>
+
+                                                <div className="border-t border-slate-800 pt-3 space-y-3">
+                                                    <div className="flex justify-between items-center">
+                                                        <span className="text-xs font-bold text-teal-400 uppercase">Tarif & Déclinaisons ({variantsList.length})</span>
+                                                        <button type="button" onClick={addVariantField} className="px-2.5 py-1 bg-teal-500/10 text-teal-400 border border-teal-500/30 rounded-lg text-xs font-bold">+ Option / Variante</button>
+                                                    </div>
+
+                                                    <div className="max-h-64 overflow-y-auto space-y-2 pr-1">
+                                                        {variantsList.map((v, index) => (
+                                                            <div key={v.id} className="bg-slate-950 border border-slate-800 p-3 rounded-xl space-y-2">
+                                                                <div className="flex justify-between items-center text-[11px] text-slate-400 font-bold">
+                                                                    <span>Option #{index + 1}</span>
+                                                                    {variantsList.length > 1 && <button type="button" onClick={() => removeVariantField(v.id)} className="text-rose-400">Supprimer</button>}
+                                                                </div>
+                                                                <div className="grid grid-cols-2 gap-2">
+                                                                    <div>
+                                                                        <label className="text-[10px] font-bold text-rose-400">Prix (Ar) *</label>
+                                                                        <input type="number" value={v.price} onChange={e => handleVariantChange(v.id, 'price', e.target.value)} placeholder="ex: 5000" className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs" required />
+                                                                    </div>
+                                                                    <div>
+                                                                        <label className="text-[10px] text-slate-400">Saveur spécifique</label>
+                                                                        <input type="text" value={v.flavor === '-' ? '' : v.flavor} onChange={e => handleVariantChange(v.id, 'flavor', e.target.value || '-')} placeholder="Optionnel" className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs" />
+                                                                    </div>
+                                                                </div>
+                                                                <div className="grid grid-cols-3 gap-2">
+                                                                    <div>
+                                                                        <label className="text-[10px] text-slate-400">Nicotine</label>
+                                                                        <select value={v.nicotine_level} onChange={e => handleVariantChange(v.id, 'nicotine_level', e.target.value)} className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-xs">
+                                                                            <option value="-">- Aucun -</option>
+                                                                            <option value="0mg">0mg</option>
+                                                                            <option value="3mg">3mg</option>
+                                                                            <option value="6mg">6mg</option>
+                                                                            <option value="9mg">9mg</option>
+                                                                            <option value="12mg">12mg</option>
+                                                                            <option value="20mg">20mg</option>
+                                                                        </select>
+                                                                    </div>
+                                                                    <div>
+                                                                        <label className="text-[10px] text-slate-400">Volume</label>
+                                                                        <select value={v.volume_ml} onChange={e => handleVariantChange(v.id, 'volume_ml', e.target.value)} className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1.5 text-xs">
+                                                                            <option value="-">- Aucun -</option>
+                                                                            <option value="10ml">10ml</option>
+                                                                            <option value="30ml">30ml</option>
+                                                                            <option value="50ml">50ml</option>
+                                                                            <option value="100ml">100ml</option>
+                                                                            <option value="200ml">200ml</option>
+                                                                            <option value="500ml">500ml</option>
+                                                                        </select>
+                                                                    </div>
+                                                                    <div>
+                                                                        <label className="text-[10px] text-slate-400">Coloris</label>
+                                                                        <input type="text" value={v.color_finish === '-' ? '' : v.color_finish} onChange={e => handleVariantChange(v.id, 'color_finish', e.target.value || '-')} placeholder="Optionnel" className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs" />
+                                                                    </div>
+                                                                </div>
+                                                                <div>
+                                                                    <label className="text-[10px] text-slate-400">Résistance (Ω) : coils, atomiseurs</label>
+                                                                    <input type="text" list="ohm-list" value={v.ohm_value === '-' ? '' : v.ohm_value} onChange={e => handleVariantChange(v.id, 'ohm_value', e.target.value || '-')} placeholder="ex: 0.4Ω (optionnel)" className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs" />
+                                                                </div>
+                                                                <div className="flex items-center space-x-2 pt-1">
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={v.is_out_of_stock}
+                                                                        onChange={e => handleVariantChange(v.id, 'is_out_of_stock', e.target.checked)}
+                                                                        className="w-3.5 h-3.5 accent-rose-500 cursor-pointer"
+                                                                    />
+                                                                    <label className="text-[10px] text-rose-400 font-bold uppercase">En rupture de stock</label>
+                                                                </div>
+                                                                <div>
+                                                                    <label className="text-[10px] text-slate-400">Photo spécifique (optionnel)</label>
+                                                                    <input type="file" accept="image/*" onChange={(e) => handleVariantImageUpload(v.id, e)} className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2 py-1 text-[11px] text-slate-400" />
+                                                                    {v.image_url && <img src={v.image_url} alt="Variante" className="w-10 h-10 object-contain rounded mt-1 border border-slate-800 bg-white p-0.5" />}
+                                                                </div>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+
+                                                <div className="flex gap-2">
+                                                    <button type="submit" className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-bold text-xs uppercase tracking-wider">
+                                                        {editingProductId ? 'Mettre à jour' : 'Enregistrer le produit'}
+                                                    </button>
+                                                    {editingProductId && (
+                                                        <button type="button" onClick={resetProductForm} className="px-4 py-3 bg-slate-800 rounded-xl text-xs font-bold">Annuler</button>
+                                                    )}
+                                                </div>
+                                            </form>
+                                        </div>
+
+                                        <div className="lg:col-span-2 bg-slate-900 border border-slate-800 p-6 rounded-3xl">
+                                            <h2 className="text-sm font-bold uppercase text-indigo-400 mb-4">Catalogue Classé par Rubriques & Dossiers ({products.length})</h2>
+                                            <div className="space-y-6 max-h-[600px] overflow-y-auto pr-2">
+                                                {categories.map(cat => {
+                                                    const catProducts = products.filter(p => p.category_id === cat.id);
+                                                    if (catProducts.length === 0) return null;
+
+                                                    const parentCat = categories.find(c => c.id === cat.parent_id);
+
+                                                    return (
+                                                        <div key={cat.id} className="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-3">
+                                                            <div className="flex items-center space-x-2 border-b border-slate-800 pb-2">
+                                                                <span className="text-base">📁</span>
+                                                                <h3 className="font-black text-sm text-teal-400">
+                                                                    {parentCat ? `${parentCat.name} ↳ ${cat.name}` : cat.name}
+                                                                </h3>
+                                                                <span className="text-[10px] bg-slate-900 text-slate-400 px-2 py-0.5 rounded-full border border-slate-800 font-bold">
+                                                                    {catProducts.length} produit(s)
+                                                                </span>
+                                                            </div>
+                                                            <div className="grid grid-cols-1 gap-2">
+                                                                {catProducts.map(renderAdminProductRow)}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+
+                                                {uncategorizedProducts.length > 0 && (
+                                                    <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-3">
+                                                        <div className="flex items-center space-x-2 border-b border-slate-800 pb-2">
+                                                            <span className="text-base">📦</span>
+                                                            <h3 className="font-black text-sm text-slate-400">Non classés</h3>
+                                                            <span className="text-[10px] bg-slate-900 text-slate-400 px-2 py-0.5 rounded-full border border-slate-800 font-bold">
+                                                                {uncategorizedProducts.length} produit(s)
+                                                            </span>
+                                                        </div>
+                                                        <div className="grid grid-cols-1 gap-2">
+                                                            {uncategorizedProducts.map(renderAdminProductRow)}
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {adminTab === 'categories' && (
+                                    <div className="space-y-8">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                            <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl space-y-4">
+                                                <h3 className="text-sm font-bold uppercase text-indigo-400">Ajouter une Marque</h3>
+                                                <form onSubmit={handleAddBrand} className="space-y-3">
+                                                    <div>
+                                                        <label className="text-xs text-slate-400 font-bold uppercase">Nom de la marque</label>
+                                                        <input type="text" value={newBrandName} onChange={e => setNewBrandName(e.target.value)} placeholder="ex: Vaporesso, A&L..." className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm" required />
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-xs text-slate-400 font-bold uppercase">Description rapide</label>
+                                                        <input type="text" value={newBrandDesc} onChange={e => setNewBrandDesc(e.target.value)} placeholder="Description..." className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm" />
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-xs text-slate-400 font-bold uppercase">Logo de la Marque</label>
+                                                        <input type="file" accept="image/*" onChange={handleBrandLogoUpload} className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-400" />
+                                                        {newBrandLogo && <img src={newBrandLogo} alt="Logo" className="w-12 h-12 object-contain rounded-xl mt-2 border border-slate-800 bg-white p-1" />}
+                                                    </div>
+                                                    <button type="submit" className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-bold text-xs uppercase">Ajouter la marque</button>
+                                                </form>
+
+                                                <div className="pt-4 border-t border-slate-800 space-y-2">
+                                                    <span className="text-xs font-bold text-slate-400 uppercase">Marques enregistrées ({brands.length})</span>
+                                                    <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
+                                                        {brands.map(b => (
+                                                            <div key={b.id} className="bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex justify-between items-center text-xs">
+                                                                <div className="flex items-center space-x-2">
+                                                                    <div className="w-8 h-8 rounded-lg border border-slate-800 bg-white flex items-center justify-center p-0.5">
+                                                                        <img src={b.logo_url} alt={b.name} className="max-w-full max-h-full object-contain" />
+                                                                    </div>
+                                                                    <span className="font-bold text-slate-200">{b.name}</span>
+                                                                </div>
+                                                                <button onClick={() => deleteBrand(b.id)} className="px-2 py-1 bg-rose-500/10 text-rose-400 rounded-lg text-[10px] font-bold">Supprimer</button>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl space-y-4">
+                                                <div className="flex justify-between items-center">
+                                                    <h3 className="text-sm font-bold uppercase text-indigo-400">
+                                                        {editingCatId ? 'Modifier l\'élément' : 'Créer un Dossier / Sous-Rubrique'}
+                                                    </h3>
+                                                    {newCatParent && (
+                                                        <span className="text-[10px] bg-teal-500/20 text-teal-300 font-bold px-2 py-1 rounded-lg border border-teal-500/30">
+                                                            Rattaché à : {categories.find(c => c.id === newCatParent)?.name}
+                                                        </span>
+                                                    )}
+                                                </div>
+
+                                                <form onSubmit={handleSaveCategory} className="space-y-3">
+                                                    <div>
+                                                        <label className="text-xs text-slate-400 font-bold uppercase">Nom du dossier / sous-rubrique</label>
+                                                        <input type="text" value={newCatName} onChange={e => setNewCatName(e.target.value)} placeholder="ex: E-Liquide DIY, Arômes..." className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm" required />
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-xs text-slate-400 font-bold uppercase">Rattacher à un dossier parent (Emplacement)</label>
+                                                        <select value={newCatParent} onChange={e => setNewCatParent(e.target.value)} className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm">
+                                                            <option value="">-- Racine (Rubrique Principale) --</option>
+                                                            {categories.filter(c => !excludedParentIds.includes(c.id)).map(c => (
+                                                                <option key={c.id} value={c.id}>
+                                                                    {c.parent_id ? `↳ ${c.name}` : `📁 ${c.name}`}
+                                                                </option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
+                                                    <div className="grid grid-cols-2 gap-2">
+                                                        <div>
+                                                            <label className="text-xs text-slate-400 font-bold uppercase">Ordre d'affichage (Disposition)</label>
+                                                            <input type="number" value={newCatOrder} onChange={e => setNewCatOrder(e.target.value)} className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-teal-400 font-bold" />
+                                                        </div>
+                                                        <div>
+                                                            <label className="text-xs text-slate-400 font-bold uppercase">Image d'illustration</label>
+                                                            <input type="file" accept="image/*" onChange={handleLocalCatImageUpload} className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-2 py-2 text-xs text-slate-400" />
+                                                        </div>
+                                                    </div>
+                                                    {newCatImage && <img src={newCatImage} alt="Aperçu" className="w-16 h-16 object-contain rounded-xl border border-slate-800 bg-white p-1" />}
+
+                                                    <div className="border-t border-slate-800 pt-3 space-y-2">
+                                                        <div className="flex justify-between items-center">
+                                                            <label className="text-xs text-teal-400 font-bold uppercase">Tableau de prix du dossier (Optionnel)</label>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setNewCatPriceTable([...newCatPriceTable, { label: '', price: '' }])}
+                                                                className="px-2 py-1 bg-teal-500/10 text-teal-400 border border-teal-500/30 rounded-lg text-[10px] font-bold">
+                                                                + Ligne de prix
+                                                            </button>
+                                                        </div>
+                                                        <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                                                            {newCatPriceTable.map((row, index) => (
+                                                                <div key={index} className="flex gap-2 items-center">
+                                                                    <input
+                                                                        type="text"
+                                                                        value={row.label}
+                                                                        onChange={e => setNewCatPriceTable(newCatPriceTable.map((r, i) => i === index ? { ...r, label: e.target.value } : r))}
+                                                                        placeholder="Désignation (ex: 10ml, Pack 3...)"
+                                                                        className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs"
+                                                                    />
+                                                                    <input
+                                                                        type="text"
+                                                                        value={row.price}
+                                                                        onChange={e => setNewCatPriceTable(newCatPriceTable.map((r, i) => i === index ? { ...r, price: e.target.value } : r))}
+                                                                        placeholder="Prix (Ar)"
+                                                                        className="w-24 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-xs text-teal-400 font-bold"
+                                                                    />
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => setNewCatPriceTable(newCatPriceTable.filter((_, i) => i !== index))}
+                                                                        className="text-rose-400 text-xs font-bold px-1">✕</button>
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="flex gap-2 pt-2">
+                                                        <button type="submit" className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-bold text-xs uppercase">
+                                                            {editingCatId ? 'Mettre à jour' : 'Enregistrer le dossier'}
+                                                        </button>
+                                                        {(editingCatId || newCatParent) && (
+                                                            <button type="button" onClick={resetCategoryForm} className="px-4 py-2.5 bg-slate-800 rounded-xl text-xs font-bold">Annuler</button>
+                                                        )}
+                                                    </div>
+                                                </form>
+
+                                                <div className="pt-4 border-t border-slate-800 space-y-2">
+                                                    <span className="text-xs font-bold text-slate-400 uppercase">Arborescence & Disposition (▲ ▼ pour trier)</span>
+                                                    <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
+                                                        {categories.filter(c => !c.parent_id).map(mainCat => (
+                                                            <CategoryTreeItem
+                                                                key={mainCat.id}
+                                                                category={mainCat}
+                                                                categories={categories}
+                                                                onAddChild={startAddSubCategory}
+                                                                onEdit={startEditCategory}
+                                                                onDelete={deleteCategory}
+                                                                onMove={moveCategoryOrder}
+                                                            />
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {adminTab === 'shop' && (
+                                    <div className="max-w-3xl mx-auto space-y-6">
+                                        <div className="bg-slate-900 border border-slate-800 p-6 sm:p-8 rounded-3xl space-y-5">
+                                            <h3 className="text-sm font-bold uppercase text-indigo-400">Bannières de l'accueil</h3>
+                                            <p className="text-xs text-slate-400">Jusqu'à 5 bannières défilantes. Format conseillé : image large (ex. 1600×600). Sans bannière, une bannière dorée par défaut est affichée.</p>
+                                            {site.banners.map((bn, i) => {
+                                                const upd = (patch) => setSite(prev => ({ ...prev, banners: prev.banners.map((x, j) => j === i ? { ...x, ...patch } : x) }));
+                                                return (
+                                                    <div key={i} className="bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-2">
+                                                        <div className="flex items-center justify-between">
+                                                            <span className="text-xs font-black text-teal-400">Bannière {i + 1}</span>
+                                                            <button onClick={() => setSite(prev => ({ ...prev, banners: prev.banners.filter((_, j) => j !== i) }))} className="text-[11px] font-bold text-rose-400">Supprimer</button>
+                                                        </div>
+                                                        {bn.image && <img src={bn.image} alt="" className="w-full h-24 object-cover rounded-xl border border-slate-800" />}
+                                                        <input type="file" accept="image/*" onChange={async (e) => { const f = e.target.files?.[0]; if (!f) return; const url = await uploadImageToSupabase(f); if (url) upd({ image: url }); e.target.value = ''; }} className="w-full text-[11px] text-slate-400" />
+                                                        <input type="text" value={bn.title || ''} onChange={e => upd({ title: e.target.value })} placeholder="Titre" className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100" />
+                                                        <input type="text" value={bn.subtitle || ''} onChange={e => upd({ subtitle: e.target.value })} placeholder="Sous-titre" className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100" />
+                                                        <div className="grid grid-cols-2 gap-2">
+                                                            <input type="text" value={bn.cta || ''} onChange={e => upd({ cta: e.target.value })} placeholder="Texte du bouton" className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100" />
+                                                            <select value={bn.category_id || ''} onChange={e => upd({ category_id: e.target.value })} className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-100">
+                                                                <option value="">Lien : tout le catalogue</option>
+                                                                {categories.map(c => <option key={c.id} value={c.id}>{c.parent_id ? '— ' : ''}{c.name}</option>)}
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                            {site.banners.length < 5 && (
+                                                <button onClick={() => setSite(prev => ({ ...prev, banners: [...prev.banners, { image: '', title: '', subtitle: '', cta: 'Découvrir', category_id: '' }] }))} className="w-full py-2.5 border border-dashed border-slate-700 hover:border-teal-500 rounded-xl text-xs font-bold text-slate-300 transition">+ Ajouter une bannière</button>
+                                            )}
+                                        </div>
+
+                                        <div className="bg-slate-900 border border-slate-800 p-6 sm:p-8 rounded-3xl space-y-4">
+                                            <h3 className="text-sm font-bold uppercase text-indigo-400">Textes de la boutique</h3>
+                                            {[
+                                                ['announcement', "Bandeau d'annonce (tout en haut)", 'text'],
+                                                ['about_title', 'Titre « À propos » (accueil)', 'text'],
+                                                ['about_text', 'Texte « À propos » (accueil et pied de page)', 'area'],
+                                                ['address', 'Adresse', 'text'],
+                                                ['hours', 'Horaires', 'text'],
+                                                ['email', 'Email', 'text'],
+                                                ['facebook', 'Lien Facebook', 'text'],
+                                                ['instagram', 'Lien Instagram', 'text']
+                                            ].map(([k, label, kind]) => (
+                                                <div key={k}>
+                                                    <label className="text-xs text-slate-400 font-bold uppercase">{label}</label>
+                                                    {kind === 'area'
+                                                        ? <textarea rows="4" value={site[k] || ''} onChange={e => setSite({ ...site, [k]: e.target.value })} className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100" />
+                                                        : <input type="text" value={site[k] || ''} onChange={e => setSite({ ...site, [k]: e.target.value })} className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100" />}
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        <div className="bg-slate-900 border border-slate-800 p-6 sm:p-8 rounded-3xl space-y-4">
+                                            <h3 className="text-sm font-bold uppercase text-indigo-400">Pages d'information</h3>
+                                            <p className="text-xs text-slate-400">1ʳᵉ ligne = titre de la page. Séparez les paragraphes par une ligne vide. Un paragraphe dont la 1ʳᵉ ligne est courte (sans point final) reçoit un sous-titre doré.</p>
+                                            {PAGE_LINKS.map(l => (
+                                                <div key={l.key}>
+                                                    <label className="text-xs text-teal-400 font-bold uppercase">{l.label}</label>
+                                                    <textarea rows="8" value={site.pages[l.key] || ''} onChange={e => setSite({ ...site, pages: { ...site.pages, [l.key]: e.target.value } })} className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100 leading-relaxed" />
+                                                </div>
+                                            ))}
+                                        </div>
+
+                                        <button onClick={handleSaveSettings} className="w-full py-3 bg-teal-500 hover:bg-teal-400 text-black rounded-xl font-black text-xs uppercase tracking-wider transition">
+                                            Enregistrer la boutique
+                                        </button>
+                                    </div>
+                                )}
+
+                                {adminTab === 'settings' && (
+                                    <div className="max-w-2xl mx-auto space-y-6">
+                                        <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl space-y-6">
+                                            <h3 className="text-sm font-bold uppercase text-indigo-400">Modèle de prix DIY par Volume & Nicotine (0mg, 3mg, 6mg)</h3>
+                                            <p className="text-xs text-slate-400">Configurez ci-dessous le prix exact pour chaque combinaison de volume et de taux de nicotine. En cochant la case dans le générateur rapide de produit, ces tarifs s'appliqueront automatiquement.</p>
+                                            
+                                            <div className="space-y-4 max-h-[500px] overflow-y-auto pr-1">
+                                                {['10ml', '30ml', '50ml', '100ml', '200ml', '500ml'].map(vol => (
+                                                    <div key={vol} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2">
+                                                        <h4 className="text-xs font-black text-teal-400 uppercase">Contenance : {vol}</h4>
+                                                        <div className="grid grid-cols-3 gap-2">
+                                                            {['0mg', '3mg', '6mg'].map(nic => (
+                                                                <div key={nic}>
+                                                                    <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">{nic}</label>
+                                                                    <input 
+                                                                        type="number" 
+                                                                        value={diyPresetPrices[`${vol}_${nic}`] || ''} 
+                                                                        onChange={e => setDiyPresetPrices({...diyPresetPrices, [`${vol}_${nic}`]: e.target.value})} 
+                                                                        placeholder="Prix (Ar)" 
+                                                                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-teal-400 font-bold" 
+                                                                    />
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+
+                                            <button onClick={handleSaveDiyPreset} className="w-full py-3 bg-teal-500 hover:bg-teal-400 text-black rounded-xl font-black text-xs uppercase tracking-wider transition shadow">
+                                                Enregistrer ce modèle de prix complet
+                                            </button>
+                                        </div>
+
+                                        <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl space-y-6">
+                                            <h3 className="text-sm font-bold uppercase text-indigo-400">Paramètres Généraux & Commandes</h3>
+
+                                            <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex items-center justify-between gap-3">
+                                                <div>
+                                                    <h4 className="text-xs font-bold text-slate-200">Masquer les produits en rupture</h4>
+                                                    <p className="text-[10px] text-slate-400">Cache automatiquement les déclinaisons ou produits épuisés.</p>
+                                                </div>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={settings.hideOutOfStock}
+                                                    onChange={e => setSettings({ ...settings, hideOutOfStock: e.target.checked })}
+                                                    className="w-5 h-5 accent-teal-500 cursor-pointer shrink-0"
+                                                />
+                                            </div>
+
+                                            <div className="space-y-4 pt-2">
+                                                <div>
+                                                    <label className="text-xs text-slate-400 font-bold uppercase">Numéro WhatsApp (+261...)</label>
+                                                    <input type="text" value={settings.whatsappNumber} onChange={e => setSettings({ ...settings, whatsappNumber: e.target.value })} className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm" />
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs text-slate-400 font-bold uppercase">Message pré-rempli</label>
+                                                    <textarea value={settings.whatsappMessage} onChange={e => setSettings({ ...settings, whatsappMessage: e.target.value })} className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm" rows="2"></textarea>
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs text-slate-400 font-bold uppercase">Lien Messenger</label>
+                                                    <input type="text" value={settings.messengerUrl} onChange={e => setSettings({ ...settings, messengerUrl: e.target.value })} className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm" />
+                                                </div>
+                                            </div>
+
+                                            <button onClick={handleSaveSettings} className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-black text-xs uppercase tracking-wider transition shadow-lg shadow-indigo-600/30">
+                                                Enregistrer les paramètres
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </main>
+
+                    {selectedProduct && (
+                        <ProductModal
+                            product={selectedProduct}
+                            brand={brands.find(b => b.id === selectedProduct.brand_id)}
+                            hideOutOfStock={hideOutOfStock}
+                            selectedVarId={selectedVariantByProduct[selectedProduct.id]}
+                            onSelectVariant={onSelectVariant}
+                            qty={quantityByProduct[selectedProduct.id] || 1}
+                            onQty={onQty}
+                            onClose={closeProduct}
+                            onAdd={addToCart}
+                            onCopyLink={copyProductLink}
+                        />
+                    )}
+
+                    {showCartModal && (
+                        <div className="fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 flex items-center justify-center p-4" onClick={() => setShowCartModal(false)}>
+                            <div className="bg-slate-900 border border-slate-800 p-6 sm:p-8 rounded-3xl max-w-lg w-full shadow-2xl space-y-5 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex justify-between items-center border-b border-slate-800 pb-3">
+                                    <h3 className="text-base font-black text-slate-100 uppercase tracking-wider flex items-center space-x-2">
+                                        <span>Mon Panier</span>
+                                        <span className="text-xs bg-teal-500/20 text-teal-400 px-2 py-0.5 rounded-full">{cartCount}</span>
+                                    </h3>
+                                    <button onClick={() => setShowCartModal(false)} className="text-slate-400 hover:text-slate-100 font-bold text-lg">✕</button>
+                                </div>
+
+                                {cartLines.length === 0 ? (
+                                    <div className="text-center py-8">
+                                        <p className="text-xs text-slate-500">Votre panier est vide pour le moment.</p>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
+                                        {cartLines.map(l => {
+                                            const flavor = getFlavor(l.product, l.variant);
+                                            const details = [];
+                                            if (flavor) details.push(`Saveur: ${flavor}`);
+                                            variantParts(l.variant).forEach(p => details.push(p));
+                                            return (
+                                                <div key={l.variantId} className="bg-slate-950 p-3 rounded-2xl border border-slate-800 flex justify-between items-center gap-3 text-xs">
+                                                    <div className="min-w-0">
+                                                        <p className="font-bold text-slate-200">{l.product.name}</p>
+                                                        {details.length > 0 && <p className="text-slate-400 mt-0.5">{details.join(' | ')}</p>}
+                                                        <p className="text-teal-400 font-black mt-1">{fmt(l.variant.price * l.quantity)} Ar</p>
+                                                    </div>
+                                                    <div className="flex items-center space-x-1.5 shrink-0">
+                                                        <button onClick={() => changeCartQty(l.variantId, -1)} className="w-6 h-6 bg-slate-900 border border-slate-800 rounded-lg font-bold">-</button>
+                                                        <span className="font-bold text-teal-400 w-5 text-center">{l.quantity}</span>
+                                                        <button onClick={() => changeCartQty(l.variantId, 1)} className="w-6 h-6 bg-slate-900 border border-slate-800 rounded-lg font-bold">+</button>
+                                                        <button onClick={() => removeFromCart(l.variantId)} className="w-6 h-6 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white flex items-center justify-center font-bold transition ml-1">×</button>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+
+                                <div className="border-t border-slate-800 pt-3 flex justify-between items-center font-black text-base">
+                                    <span className="text-slate-400">Total :</span>
+                                    <span className="text-teal-400">{fmt(cartTotal)} Ar</span>
+                                </div>
+
+                                {cartNotice && (
+                                    <div className="bg-teal-500/10 border border-teal-500/30 text-teal-200 rounded-2xl p-3 text-xs space-y-2">
+                                        <p>{cartNotice.message}</p>
+                                        {cartNotice.text && (
+                                            <textarea readOnly value={cartNotice.text} rows="5" onFocus={(e) => e.target.select()} className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2 text-[11px] text-slate-200"></textarea>
+                                        )}
+                                    </div>
+                                )}
+
+                                <div className="space-y-2.5 pt-2">
+                                    <button
+                                        onClick={checkoutWhatsApp}
+                                        disabled={cartLines.length === 0}
+                                        className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-2xl font-bold text-xs uppercase tracking-wider transition shadow-lg shadow-emerald-600/25 flex items-center justify-center space-x-2">
+                                        <span>Commander via WhatsApp</span>
+                                    </button>
+                                    <button
+                                        onClick={checkoutMessenger}
+                                        disabled={cartLines.length === 0}
+                                        className="w-full py-3.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-2xl font-bold text-xs uppercase tracking-wider transition shadow-lg shadow-blue-600/25 flex items-center justify-center space-x-2">
+                                        <span>Commander via Messenger</span>
+                                    </button>
+                                    {cartLines.length > 0 && (
+                                        <button onClick={clearCart} className="w-full py-2 text-[11px] text-slate-500 hover:text-rose-400 font-bold transition">
+                                            Vider le panier
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    <footer className="border-t border-slate-800/80 bg-slate-900/60 mt-16">
+                        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-10 grid sm:grid-cols-2 lg:grid-cols-4 gap-8 text-xs text-slate-400">
+                            <div className="space-y-3">
+                                <VapoLogo />
+                                <p className="leading-relaxed">{site.about_text}</p>
+                            </div>
+                            <div className="space-y-2">
+                                <h4 className="font-display text-sm font-extrabold text-slate-100">Rubriques</h4>
+                                {categories.filter(c => !c.parent_id).map(c => (
+                                    <button key={c.id} onClick={() => navigateTo('category', c.id, null)} className="block hover:text-teal-400 transition text-left">{c.name}</button>
+                                ))}
+                            </div>
+                            <div className="space-y-2">
+                                <h4 className="font-display text-sm font-extrabold text-slate-100">Informations</h4>
+                                {PAGE_LINKS.map(l => (
+                                    <button key={l.key} onClick={() => openPage(l.key)} className="block hover:text-teal-400 transition text-left">{l.label}</button>
+                                ))}
+                            </div>
+                            <div className="space-y-2">
+                                <h4 className="font-display text-sm font-extrabold text-slate-100">Nous joindre</h4>
+                                <a href={waLink("Bonjour Vapo d'Or, j'ai une question :")} target="_blank" rel="noopener noreferrer" className="block hover:text-teal-400 transition">WhatsApp : {settings.whatsappNumber}</a>
+                                {settings.messengerUrl && <a href={settings.messengerUrl} target="_blank" rel="noopener noreferrer" className="block hover:text-teal-400 transition">Messenger</a>}
+                                {site.facebook && <a href={site.facebook} target="_blank" rel="noopener noreferrer" className="block hover:text-teal-400 transition">Facebook</a>}
+                                {site.instagram && <a href={site.instagram} target="_blank" rel="noopener noreferrer" className="block hover:text-teal-400 transition">Instagram</a>}
+                                {site.email && <p>{site.email}</p>}
+                                {site.address && <p>📍 {site.address}</p>}
+                                {site.hours && <p>🕘 {site.hours}</p>}
+                            </div>
+                        </div>
+                        <div className="border-t border-slate-800/80 py-4 px-4 text-center space-y-1">
+                            <p className="text-[10px] text-slate-500">⚠ Produits réservés aux adultes (18+). La nicotine crée une forte dépendance.</p>
+                            <p className="text-[10px] text-slate-600">© {new Date().getFullYear()} Vapo d'Or — Madagascar</p>
+                            <button onClick={() => adminUnlocked ? navigateTo('admin') : setShowAuthModal(true)} className="text-[10px] text-slate-600 hover:text-slate-400 transition">
+                                Espace d'Administration
+                            </button>
+                        </div>
+                    </footer>
+
+                    {settings.whatsappNumber && currentView !== 'admin' && (
+                        <a href={waLink("Bonjour Vapo d'Or, j'ai une question :")} target="_blank" rel="noopener noreferrer" aria-label="Discuter sur WhatsApp" className="fixed bottom-5 right-4 z-30 w-14 h-14 rounded-full bg-emerald-500 hover:bg-emerald-400 text-white shadow-2xl shadow-emerald-500/30 flex items-center justify-center transition">
+                            <svg className="w-7 h-7" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 00-8.6 15.1L2 22l5-1.3A10 10 0 1012 2zm0 18.2a8.2 8.2 0 01-4.2-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1112 20.2zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8-.2-.1-.4-.1-.6.1l-.8 1c-.1.2-.3.2-.5.1a6.700 6.700 0 01-3.300-2.900c-.2-.4.2-.4.7-1.300.1-.2 0-.3 0-.5l-.8-1.800c-.2-.5-.4-.4-.6-.4h-.5a1 1 0 00-.7.3 3 3 0 00-.9 2.200c0 1.300.9 2.500 1 2.700.1.200 1.800 2.800 4.400 3.900 1.600.7 2.200.7 3 .6.500-.1 1.500-.6 1.700-1.200.2-.6.2-1.100.2-1.200-.1-.1-.3-.2-.5-.3z"/></svg>
+                        </a>
+                    )}
+
+                    {showAuthModal && (
+                        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+                            <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-md w-full shadow-2xl space-y-5">
+                                <div className="flex justify-between items-center">
+                                    <h3 className="text-base font-black text-indigo-400 uppercase tracking-wider">Connexion Administrateur</h3>
+                                    <button onClick={() => setShowAuthModal(false)} className="text-slate-400 hover:text-slate-100 font-bold">✕</button>
+                                </div>
+                                <form onSubmit={handleSupabaseLogin} className="space-y-4">
+                                    <div>
+                                        <label className="text-[11px] font-bold text-slate-400 uppercase">Identifiant / Email</label>
+                                        <input type="email" value={adminEmail} onChange={e => setAdminEmail(e.target.value)} placeholder="admin@exemple.com" className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm" required />
+                                    </div>
+                                    <div>
+                                        <label className="text-[11px] font-bold text-slate-400 uppercase">Mot de passe</label>
+                                        <input type="password" value={adminPassword} onChange={e => setAdminPassword(e.target.value)} placeholder="••••••••" className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm" required />
+                                    </div>
+                                    {authError && <p className="text-xs text-rose-400">{authError}</p>}
+                                    <button type="submit" className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-bold text-xs uppercase tracking-wider transition shadow-lg shadow-indigo-600/30">
+                                        Se connecter
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
