@@ -478,7 +478,7 @@
 
         function HeroCarousel({ banners, onCta }) {
             const [idx, setIdx] = useState(0);
-            const slides = banners.length > 0 ? banners : [{ title: "Vapo d'Or", subtitle: "Votre boutique vape à Madagascar : matériel, e-liquides et conseils.", cta: 'Voir le catalogue', image: '' }];
+            const slides = banners.length > 0 ? banners : [{ title: "Vapo d'Or", subtitle: "Le goût de l'or, livré chez vous. Une équipe à votre écoute et à votre service, 7j/7 !", cta: 'Voir le catalogue', image: '' }];
             useEffect(() => {
                 if (slides.length < 2) return;
                 const t = setInterval(() => setIdx(i => (i + 1) % slides.length), 6000);
@@ -2249,7 +2249,7 @@
                                                 <p className="text-sm text-slate-400 leading-relaxed whitespace-pre-line">{site.about_text}</p>
                                             </div>
                                             <div className="flex flex-col gap-2">
-                                                <a href={waLink("Bonjour Vapo d'Or, j'aimerais un conseil :")} target="_blank" rel="noopener noreferrer" className="text-center px-5 py-3 bg-teal-500 hover:bg-teal-400 text-black rounded-2xl text-xs font-black transition">Demander conseil sur WhatsApp</a>
+                                                <a href={waLink("Bonjour Vapo d'Or, j'aimerais un conseil :")} target="_blank" rel="noopener noreferrer" className="text-center px-5 py-3 bg-teal-500 hover:bg-teal-400 text-black rounded-2xl text-xs font-black transition">Demander conseil sur WhatsApp, c'est gratuit</a>
                                                 <button onClick={() => openPage('guides')} className="px-5 py-3 border border-slate-700 hover:border-teal-500 text-slate-200 rounded-2xl text-xs font-bold transition">Lire nos guides</button>
                                             </div>
                                         </div>
@@ -3225,10 +3225,31 @@
                                             ))}
                                         </div>
 
+                                        <div className="bg-slate-900 border border-teal-500/40 p-6 sm:p-8 rounded-3xl space-y-5">
+                                            <h3 className="text-sm font-bold uppercase text-indigo-400">Conditions de vente & de livraison</h3>
+                                            <p className="text-xs text-slate-400">Ces textes s'affichent dans les pages « Conditions de vente » et « Livraison & Tarifs » du site. 1ʳᵉ ligne = titre de la page. Séparez les paragraphes par une ligne vide. Pensez à cliquer sur « Enregistrer la boutique » en bas.</p>
+                                            {[
+                                                { key: 'cgv', label: 'Conditions de vente', hint: 'Âge minimum, prix, disponibilité, paiement, retours / réclamations...' },
+                                                { key: 'livraison', label: 'Conditions de livraison', hint: 'Zones desservies, tarifs, délais, mode de paiement à la livraison...' }
+                                            ].map(f => (
+                                                <div key={f.key} className="space-y-1.5">
+                                                    <div className="flex items-center justify-between gap-2">
+                                                        <label className="text-xs text-teal-400 font-bold uppercase">{f.label}</label>
+                                                        <button type="button" onClick={() => { if (confirm('Remettre le texte par défaut pour « ' + f.label + ' » ?')) setSite({ ...site, pages: { ...site.pages, [f.key]: DEFAULT_SITE.pages[f.key] } }); }} className="text-[10px] text-slate-400 hover:text-teal-400 underline">Rétablir le texte par défaut</button>
+                                                    </div>
+                                                    <p className="text-[10px] text-slate-500">{f.hint}</p>
+                                                    <textarea rows="12" value={site.pages[f.key] || ''} onChange={e => setSite({ ...site, pages: { ...site.pages, [f.key]: e.target.value } })} className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-xs text-slate-200 leading-relaxed" />
+                                                </div>
+                                            ))}
+                                            <button onClick={handleSaveSettings} className="w-full py-3 bg-teal-500 hover:bg-teal-400 text-black rounded-xl font-black text-xs uppercase tracking-wider transition">
+                                                Enregistrer les conditions
+                                            </button>
+                                        </div>
+
                                         <div className="bg-slate-900 border border-slate-800 p-6 sm:p-8 rounded-3xl space-y-4">
                                             <h3 className="text-sm font-bold uppercase text-indigo-400">Pages d'information</h3>
                                             <p className="text-xs text-slate-400">1ʳᵉ ligne = titre de la page. Séparez les paragraphes par une ligne vide. Un paragraphe dont la 1ʳᵉ ligne est courte (sans point final) reçoit un sous-titre doré.</p>
-                                            {PAGE_LINKS.map(l => (
+                                            {PAGE_LINKS.filter(l => l.key !== 'cgv' && l.key !== 'livraison').map(l => (
                                                 <div key={l.key}>
                                                     <label className="text-xs text-teal-400 font-bold uppercase">{l.label}</label>
                                                     <textarea rows="8" value={site.pages[l.key] || ''} onChange={e => setSite({ ...site, pages: { ...site.pages, [l.key]: e.target.value } })} className="w-full mt-1 bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100 leading-relaxed" />
